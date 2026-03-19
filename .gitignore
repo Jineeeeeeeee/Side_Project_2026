@@ -1,0 +1,23 @@
+.env
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Data — không commit
+data/
+inputs/
+outputs/
+logs/
+Reports/
+
+# Backup files
+*.bak*
+*.tmp
+
+# IDE
+.vscode/
+.idea/

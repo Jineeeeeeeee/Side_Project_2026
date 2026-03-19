@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "littrans"
+version = "4.1.0"
+description = "LitRPG / Tu Tiên translation pipeline powered by Gemini"
+requires-python = ">=3.11"
+dependencies = [
+    "google-genai>=1.0",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+    "typer[all]>=0.12",
+    "tqdm>=4.0",
+]
+
+[project.optional-dependencies]
+fast = ["pyahocorasick>=2.0"]
+
+[project.scripts]
+littrans = "littrans.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
