@@ -1,17 +1,22 @@
 """
-core/scout.py — Scout AI: sinh Context_Notes + cập nhật Arc_Memory.
+core/scout.py — Scout AI: sinh Context_Notes + cập nhật Arc_Memory + Emotion Tracker.
 
 MỖI LẦN CHẠY (trigger: chapters_done % SCOUT_REFRESH_EVERY == 0):
   1. Xóa Context_Notes.md cũ
   2. Đọc SCOUT_LOOKBACK chương gốc tiếng Anh gần nhất
   3. Gọi Gemini → sinh Context_Notes.md mới (ngắn hạn)
   4. Gọi arc_memory.append_arc_summary() → APPEND vào Arc_Memory.md (dài hạn)
+  5. [v4] Gọi _update_emotional_states() → cập nhật trạng thái cảm xúc vào Characters_Active.json
 
 Context_Notes.md gồm 4 mục:
   1. Mạch truyện đặc biệt (flashback, hồi ký, giấc mơ...)
   2. Khoá xưng hô đang active (cặp nhân vật + đại từ hiện tại)
   3. Diễn biến gần nhất (3-5 điểm)
   4. Cảnh báo cụ thể cho AI dịch
+
+[v4] Emotion Tracker:
+  Scout đọc các chương → infer trạng thái cảm xúc cuối window cho từng nhân vật chính
+  → ghi vào Characters_Active.json → prompt P3 hiển thị cảnh báo tông cảm xúc
 
 Pipeline tiếp tục dù Scout gặp lỗi — chỉ log, không raise.
 """
@@ -21,6 +26,7 @@ from .config import (
     RAW_DIR, CONTEXT_NOTES_FILE,
     SCOUT_LOOKBACK, SCOUT_REFRESH_EVERY,
     GEMINI_MODEL, gemini_client,
+    EMOTION_RESET_CHAPTERS,
 )
 from .io_utils import load_text, save_text_atomic
 from . import arc_memory
@@ -53,14 +59,41 @@ VD:
 - ⚠️ Chương tiếp theo có thể tiếp tục hồi ký → GIỮ xưng hô Tao–Mày, không đổi sang Anh–Em.
 - ⚠️ Arthur vừa đổi phe → xưng hô với nhóm cũ có thể thay đổi."""
 
+# ── [v4] System prompt cho Emotion Tracker ───────────────────────
+_EMOTION_SYSTEM = """Bạn là AI phân tích cảm xúc nhân vật trong truyện.
+
+Đọc các chương được cung cấp. Xác định trạng thái cảm xúc CUỐI CÙNG của từng nhân vật CHÍNH.
+
+Trả về JSON theo định dạng sau. KHÔNG thêm gì khác ngoài JSON:
+{
+  "emotional_states": [
+    {
+      "character": "Tên nhân vật",
+      "state": "normal|angry|hurt|changed",
+      "reason": "Lý do ngắn gọn (1 câu)",
+      "intensity": "low|medium|high"
+    }
+  ]
+}
+
+Quy tắc:
+- "normal": bình thường, không có gì đặc biệt
+- "angry": tức giận, bực bội, oán hận — ảnh hưởng đến cách nói chuyện
+- "hurt": tổn thương, buồn, mất mát, phản bội — ảnh hưởng đến cách nói chuyện
+- "changed": vừa trải qua sự kiện lớn thay đổi nhận thức/mục tiêu — quan trọng cho context
+- Chỉ liệt kê nhân vật có TÊN RÕ RÀNG và xuất hiện ĐÁN KỂ trong window này
+- Nếu không rõ → dùng "normal"
+- Tối đa 8 nhân vật. Ưu tiên nhân vật chính và nhân vật sẽ xuất hiện trong chương tiếp theo."""
+
+
 def run(all_files: list[str], current_index: int) -> None:
     """
-    Chạy Scout: tạo Context_Notes mới + append Arc_Memory.
+    Chạy Scout: tạo Context_Notes mới + append Arc_Memory + update Emotion.
     Không raise — pipeline tiếp tục nếu Scout thất bại.
     """
     _refresh_context_notes(all_files, current_index)
 
-    # Append arc summary (dài hạn) — chạy sau context notes
+    # Append arc summary (dài hạn)
     start = max(0, current_index - SCOUT_LOOKBACK)
     files_in_window = all_files[start:current_index]
     if files_in_window:
@@ -71,10 +104,18 @@ def run(all_files: list[str], current_index: int) -> None:
             logging.error(f"Arc Memory thất bại: {e}")
             print(f"  ⚠️  Arc Memory gặp lỗi: {e}")
 
+    # [v4] Update emotional states
+    try:
+        _update_emotional_states(all_files, current_index)
+    except Exception as e:
+        logging.error(f"Emotion Tracker thất bại: {e}")
+        print(f"  ⚠️  Emotion Tracker gặp lỗi: {e}")
+
+
 def _refresh_context_notes(all_files: list[str], current_index: int) -> None:
-    # Xóa note cũ
+    # Xóa note cũ — dùng atomic write bên dưới nên không cần xóa thủ công
+    # (os.replace() sẽ overwrite), nhưng giữ print log để người dùng biết
     if os.path.exists(str(CONTEXT_NOTES_FILE)):
-        os.remove(str(CONTEXT_NOTES_FILE))
         print("  🗑️  Đã xóa Context_Notes.md cũ.")
 
     start  = max(0, current_index - SCOUT_LOOKBACK)
@@ -118,6 +159,116 @@ def _refresh_context_notes(all_files: list[str], current_index: int) -> None:
             f"{body.strip()}\n")
     save_text_atomic(str(CONTEXT_NOTES_FILE), note)
     print(f"  ✅ Context_Notes.md ({len(note)} ký tự).")
+
+
+# ── [v4] Emotion Tracker ─────────────────────────────────────────
+
+def _update_emotional_states(all_files: list[str], current_index: int) -> None:
+    """
+    Scout đọc window chương → infer emotional_state của nhân vật chính
+    → ghi vào Characters_Active.json.
+
+    Reset về "normal" cho nhân vật không được update trong EMOTION_RESET_CHAPTERS.
+    """
+    import json
+    from .config import CHARACTERS_ACTIVE_FILE
+
+    start  = max(0, current_index - SCOUT_LOOKBACK)
+    window = all_files[start:current_index]
+    if not window:
+        return
+
+    # Đọc các chương (ưu tiên bản VN đã dịch, fallback EN)
+    from .config import TRANS_DIR
+    texts = []
+    for fn in window[-5:]:   # chỉ cần 5 chương gần nhất cho emotion
+        base, _ = os.path.splitext(fn)
+        vn_path = os.path.join(TRANS_DIR, f"{base}_VN.txt")
+        en_path = os.path.join(RAW_DIR, fn)
+        for path in [vn_path, en_path]:
+            text = load_text(path)
+            if text.strip():
+                texts.append((fn, text[:3000]))
+                break
+
+    if not texts:
+        return
+
+    user_msg = "\n\n---\n\n".join(f"### {fn}\n\n{t}" for fn, t in texts)
+
+    try:
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=user_msg,
+            config=types.GenerateContentConfig(
+                system_instruction=_EMOTION_SYSTEM,
+                temperature=0.1,
+                response_mime_type="application/json",
+            ),
+        )
+        raw = response.text or "{}"
+        import re
+        clean = re.sub(r"^```json\s*|```\s*$", "", raw.strip(), flags=re.MULTILINE)
+        data  = json.loads(clean)
+        states = data.get("emotional_states", [])
+    except Exception as e:
+        logging.error(f"Emotion extract: {e}")
+        return
+
+    if not states:
+        return
+
+    # Ghi vào Characters_Active.json
+    from .io_utils import load_json, save_json
+    char_data = load_json(str(CHARACTERS_ACTIVE_FILE)) or {}
+    chars     = char_data.get("characters", {})
+    updated   = 0
+
+    # Reset nhân vật lâu không update
+    for name, profile in chars.items():
+        em = profile.get("emotional_state", {})
+        last_ch = em.get("last_chapter_index", 0)
+        if (current_index - last_ch) >= EMOTION_RESET_CHAPTERS:
+            if em.get("current", "normal") != "normal":
+                profile.setdefault("emotional_state", {})["current"] = "normal"
+                profile["emotional_state"]["reset_at"] = current_index
+                updated += 1
+
+    # Cập nhật từ kết quả scout
+    for entry in states:
+        char_name = entry.get("character", "").strip()
+        state     = entry.get("state", "normal").strip()
+        reason    = entry.get("reason", "").strip()
+        intensity = entry.get("intensity", "medium").strip()
+
+        if not char_name:
+            continue
+        # Tìm match (không phân biệt hoa thường)
+        matched = next(
+            (n for n in chars if n.lower() == char_name.lower()),
+            None
+        )
+        if not matched:
+            continue
+
+        chars[matched]["emotional_state"] = {
+            "current"            : state,
+            "intensity"          : intensity,
+            "reason"             : reason,
+            "last_chapter_index" : current_index,
+        }
+        updated += 1
+
+    if updated:
+        save_json(str(CHARACTERS_ACTIVE_FILE), char_data)
+        non_normal = [
+            f"{n}={p['emotional_state']['current']}"
+            for n, p in chars.items()
+            if p.get("emotional_state", {}).get("current", "normal") != "normal"
+        ]
+        print(f"  💭 Emotion Tracker: {updated} nhân vật cập nhật"
+              + (f" | Active: {', '.join(non_normal[:5])}" if non_normal else " | Tất cả normal"))
+
 
 def _write_empty_note(reason: str) -> None:
     note = (f"# Context Notes\n_Không có dữ liệu: {reason}_\n\n"

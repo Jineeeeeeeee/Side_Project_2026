@@ -1,22 +1,26 @@
 """
-core/characters.py — Tiered Characters + Identity Tracking.
+core/characters.py — Tiered Characters + Identity Tracking + Emotion Tracker.
 
 TẦNG:
-  Active  (Characters_Active.json)
-    → Nhân vật xuất hiện trong ARCHIVE_AFTER_CHAPTERS chương gần nhất
-    → Luôn filter theo chapter text → đưa vào prompt nếu tên match
-
-  Archive (Characters_Archive.json)
-    → Lâu không xuất hiện → rotate từ Active sang đây
-    → Chỉ load khi tên xuất hiện trong chapter (không dump toàn bộ)
+  Active  (Characters_Active.json) → nhân vật xuất hiện gần đây
+  Archive (Characters_Archive.json) → lâu không xuất hiện
+  Staging (Staging_Characters.json) → mới, chờ merge
 
 IDENTITY TRACKING:
+  active_identity / known_aliases / identity_context
+
+[v4] EMOTION TRACKER:
   Mỗi nhân vật có thêm:
-    active_identity   : alias đang dùng hiện tại (VD: "Ngu Giả" thay vì "Klein")
-    known_aliases     : tất cả alias đã biết
-    identity_context  : khi nào dùng alias này
-  → Filter sẽ match theo cả aliases, không chỉ tên thật
-  → Prompt cảnh báo rõ khi nhân vật đang dùng danh tính khác
+    emotional_state: {
+      current: "normal|angry|hurt|changed",
+      intensity: "low|medium|high",
+      reason: "Lý do ngắn",
+      last_chapter_index: int,
+      reset_at: int  (chapter index khi reset về normal)
+    }
+  → Scout AI cập nhật emotional_state sau mỗi window
+  → _fmt() inject ⚠️ warning vào đầu profile nếu state != normal
+  → AI dịch đọc và điều chỉnh tông lời thoại cho phù hợp
 """
 import re, threading, logging
 from copy import deepcopy
@@ -73,7 +77,6 @@ def filter_characters(chapter_text: str) -> dict[str, str]:
     return matched
 
 def _matches(name: str, profile: dict, text: str) -> bool:
-    """Match theo tên thật hoặc bất kỳ alias nào."""
     candidates = [name]
     candidates += profile.get("known_aliases", [])
     candidates += profile.get("identity", {}).get("aliases", [])
@@ -91,6 +94,16 @@ def _fmt(name: str, p: dict, text: str, mc_name: str, archived=False) -> str:
 
     lines = [f"### {name}{'  [ARCHIVE]' if archived else ''}  "
              f"[{p.get('role','?')}] | {p.get('archetype','')}"]
+
+    # ── [v4] Emotion State Warning ──────────────────────────────────
+    emotional_state = p.get("emotional_state", {})
+    state = emotional_state.get("current", "normal")
+    if state and state != "normal":
+        from .prompt import inject_emotion_warning
+        # Xây dựng header trước, inject sau
+        header_line = lines[0]
+        lines[0] = "__EMOTION_INJECT_PLACEHOLDER__"
+        # Sẽ inject sau khi build xong toàn bộ profile
 
     # ── Identity warning ────────────────────────────────────────────
     ai = p.get("active_identity", "")
@@ -112,13 +125,7 @@ def _fmt(name: str, p: dict, text: str, mc_name: str, archived=False) -> str:
         *[f"- {t}" for t in p.get("personality_traits", [])],
     ]
 
-    # ── BẢNG XƯNG HÔ — ƯU TIÊN THEO THỨ TỰ ───────────────────────
-    # Quy tắc AI PHẢI tuân theo (theo thứ tự ưu tiên giảm dần):
-    #  1. relationships[X].dynamic (strong)  → cao nhất, KHÔNG thay đổi
-    #  2. relationships[X].dynamic (weak)    → dùng tạm, cập nhật khi xác nhận
-    #  3. how_refers_to_others[X]            → fallback khi chưa có quan hệ với X
-    #  4. how_refers_to_others[default_*]    → fallback cuối cùng
-
+    # ── Bảng xưng hô ───────────────────────────────────────────────
     lines += [
         "",
         "**XƯNG HÔ — ĐỌC THEO THỨ TỰ ƯU TIÊN:**",
@@ -126,13 +133,11 @@ def _fmt(name: str, p: dict, text: str, mc_name: str, archived=False) -> str:
         f"- Ghi chú formality: {speech.get('formality_note', '—')}",
     ]
 
-    # Nhóm 1: Xưng hô đã xác lập qua quan hệ (ưu tiên cao nhất)
     strong_entries = []
     weak_entries   = []
     for other, r in rels.items():
         if not r.get("dynamic"):
             continue
-        # Chỉ hiển thị nếu nhân vật kia xuất hiện trong chương, hoặc là mc_name
         if other == mc_name or re.search(rf"\b{re.escape(other)}\b", text, re.IGNORECASE):
             status = r.get("pronoun_status", "weak")
             entry  = (other, r["dynamic"], status)
@@ -150,12 +155,10 @@ def _fmt(name: str, p: dict, text: str, mc_name: str, archived=False) -> str:
             lines.append(f"  │  🔸 WEAK    {name} ↔ {other}: **{dyn}**  (tạm thời, xác nhận khi có tương tác)")
         lines.append("  └─")
 
-    # Nhóm 2: Fallback từ how_refers_to_others (chỉ dùng khi không có quan hệ)
     how = speech.get("how_refers_to_others", {})
     if isinstance(how, list):
         how = {e.get("target", ""): e.get("style", "") for e in how}
 
-    # Lọc ra những tên chưa có trong bảng quan hệ ở trên
     covered = {other for other, _, _ in strong_entries + weak_entries}
     fallback_specific = {
         t: s for t, s in how.items()
@@ -177,12 +180,10 @@ def _fmt(name: str, p: dict, text: str, mc_name: str, archived=False) -> str:
     lines.append("  ⚠️  Quy tắc đổi xưng hô: CHỈ đổi khi có sự kiện bắt buộc")
     lines.append("      (phản bội / tra khảo / lật mặt / đổi phe / mất kiểm soát cảm xúc cực độ)")
 
-    # ── Speech quirks ───────────────────────────────────────────────
     quirks = speech.get("speech_quirks", [])
     if quirks:
         lines += ["", "**Quirks lời thoại:**", *[f"- {q}" for q in quirks]]
 
-    # ── Habitual behaviors ──────────────────────────────────────────
     strong_b = [b for b in p.get("habitual_behaviors", [])
                 if b.get("confidence", 0) >= MIN_BEHAVIOR_CONF]
     if strong_b:
@@ -192,20 +193,30 @@ def _fmt(name: str, p: dict, text: str, mc_name: str, archived=False) -> str:
             lines.append(f"- [{b.get('intensity','?')}] {b.get('behavior','')} "
                          f"(trigger: {b.get('trigger','?')})")
 
-    # ── Arc status ──────────────────────────────────────────────────
     goal = arc.get("current_goal", "")
     conflict = arc.get("current_conflict", "")
     if goal or conflict:
         lines += ["", f"**Mục tiêu:** {goal}", f"**Xung đột nội tâm:** {conflict}"]
 
-    # ── Relationships (phần còn lại: type/feeling/tension/history) ──
     if mc_name and mc_name in rels and name != mc_name:
         lines += _fmt_rel(mc_name, rels[mc_name])
     for other, r in rels.items():
         if other != mc_name and re.search(rf"\b{re.escape(other)}\b", text, re.IGNORECASE):
             lines += _fmt_rel(other, r)
 
-    return "\n".join(lines)
+    profile_text = "\n".join(lines)
+
+    # ── [v4] Inject emotion warning ─────────────────────────────────
+    if state and state != "normal":
+        from .prompt import inject_emotion_warning
+        # Restore header line
+        profile_text = profile_text.replace(
+            "__EMOTION_INJECT_PLACEHOLDER__",
+            f"### {name}{'  [ARCHIVE]' if archived else ''}  [{p.get('role','?')}] | {p.get('archetype','')}"
+        )
+        profile_text = inject_emotion_warning(name, profile_text, emotional_state)
+
+    return profile_text
 
 def _fmt_rel(other: str, r: dict) -> list[str]:
     status = r.get("pronoun_status", "weak")
@@ -225,10 +236,6 @@ def _fmt_rel(other: str, r: dict) -> list[str]:
 
 # ── Archive Rotation ──────────────────────────────────────────────
 def rotate_to_archive(current_chapter_index: int) -> int:
-    """
-    Nhân vật không xuất hiện trong ARCHIVE_AFTER_CHAPTERS chương → Archive.
-    Gọi từ runner sau mỗi SCOUT_REFRESH_EVERY chương.
-    """
     with _mlock:
         with _lock:
             active_data  = load_active()
@@ -294,7 +301,6 @@ def update_from_response(
     return chars_added, rels_updated
 
 def touch_seen(names: list[str], chapter_index: int) -> None:
-    """Cập nhật last_seen_chapter_index để rotation hoạt động đúng."""
     if not names: return
     with _lock:
         data = load_active(); chars = data.get("characters", {}); changed = False
@@ -323,12 +329,11 @@ def _apply_rel(rels, target, upd, event, is_a):
             ts = r.setdefault("tension_points", [])
             if upd.new_tension not in ts:
                 ts.append(upd.new_tension)
-        # Cập nhật dynamic: chỉ khi promote_to_strong HOẶC đây là thay đổi bắt buộc
         if upd.new_dynamic:
             r["dynamic"]        = upd.new_dynamic
-            r["pronoun_status"] = "strong"   # đổi dynamic = sự kiện bắt buộc → strong
+            r["pronoun_status"] = "strong"
         elif upd.promote_to_strong:
-            r["pronoun_status"] = "strong"   # xác nhận cặp hiện tại, không đổi dynamic
+            r["pronoun_status"] = "strong"
 
 def _build_profile(char: CharacterDetail, src: str, idx: int) -> dict:
     how  = {e.target: e.style for e in char.how_refers_to_others}
@@ -338,7 +343,7 @@ def _build_profile(char: CharacterDetail, src: str, idx: int) -> dict:
             "type"          : rel.rel_type,
             "feeling"       : rel.feeling,
             "dynamic"       : rel.dynamic,
-            "pronoun_status": rel.pronoun_status,   # "weak" | "strong"
+            "pronoun_status": rel.pronoun_status,
             "current_status": rel.current_status,
             "tension_points": rel.tension_points,
             "history"       : [{"chapter": src, "event": rel.current_status or "Gặp lần đầu"}],
@@ -368,10 +373,14 @@ def _build_profile(char: CharacterDetail, src: str, idx: int) -> dict:
         },
         "habitual_behaviors": [b.model_dump() for b in char.habitual_behaviors
                                 if b.confidence >= MIN_BEHAVIOR_CONF],
-        "relationships": rels,
-        "arc_status": {"current_goal": char.current_goal, "hidden_goal": char.hidden_goal,
-                       "current_conflict": char.current_conflict},
-        "first_seen": src, "last_seen_chapter_index": idx,
+        "relationships"  : rels,
+        "arc_status"     : {"current_goal": char.current_goal, "hidden_goal": char.hidden_goal,
+                            "current_conflict": char.current_conflict},
+        # [v4] emotional_state — khởi tạo rỗng, Scout sẽ cập nhật
+        "emotional_state": {"current": "normal", "intensity": "low",
+                            "reason": "", "last_chapter_index": idx},
+        "first_seen"              : src,
+        "last_seen_chapter_index" : idx,
     }
 
 
@@ -392,6 +401,16 @@ def has_staging_chars() -> int:
     d = load_json(str(STAGING_CHARS_FILE)); return len(d.get("characters",{})) if d else 0
 
 def character_stats() -> dict[str, int]:
-    return {"active": len(load_active().get("characters",{})),
-            "archive": len(load_archive().get("characters",{})),
-            "staging": has_staging_chars()}
+    active_data = load_active()
+    chars = active_data.get("characters", {})
+    # [v4] thêm thống kê emotion
+    non_normal = sum(
+        1 for p in chars.values()
+        if p.get("emotional_state", {}).get("current", "normal") != "normal"
+    )
+    return {
+        "active"    : len(chars),
+        "archive"   : len(load_archive().get("characters",{})),
+        "staging"   : has_staging_chars(),
+        "emotional" : non_normal,   # [v4] số nhân vật đang có state != normal
+    }

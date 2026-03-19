@@ -1,9 +1,12 @@
 """
-core/config.py — Toàn bộ cấu hình pipeline v3.
+core/config.py — Toàn bộ cấu hình pipeline v4.
 Chỉnh qua .env, KHÔNG sửa file này.
 
 .env mẫu:
-    GEMINI_API_KEY=AIza...
+    GEMINI_API_KEY=AIza...          ← key chính
+    FALLBACK_KEY_1=AIza...          ← [v4] key dự phòng 1 (tùy chọn)
+    FALLBACK_KEY_2=AIza...          ← [v4] key dự phòng 2 (tùy chọn)
+    KEY_ROTATE_THRESHOLD=3          ← [v4] lỗi liên tiếp trước khi rotate key
     GEMINI_MODEL=gemini-2.5-flash
 
     MAX_RETRIES=5
@@ -16,6 +19,7 @@ Chỉnh qua .env, KHÔNG sửa file này.
     ARC_MEMORY_WINDOW=3
 
     ARCHIVE_AFTER_CHAPTERS=60
+    EMOTION_RESET_CHAPTERS=5       ← [v4] reset emotional_state sau N chương không update
 
     IMMEDIATE_MERGE=true
     AUTO_MERGE_GLOSSARY=false
@@ -37,6 +41,16 @@ if not GEMINI_API_KEY:
     sys.exit("❌ Thiếu GEMINI_API_KEY trong .env")
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
+# ── [v4] Multi-Key Fallback ───────────────────────────────────────
+# Thêm FALLBACK_KEY_1 và FALLBACK_KEY_2 vào .env để bật tính năng này.
+# Để trống = chỉ dùng key chính.
+FALLBACK_KEY_1        = os.environ.get("FALLBACK_KEY_1", "").strip()
+FALLBACK_KEY_2        = os.environ.get("FALLBACK_KEY_2", "").strip()
+KEY_ROTATE_THRESHOLD  = int(os.environ.get("KEY_ROTATE_THRESHOLD", "3"))
+
+# Build danh sách keys (bỏ key rỗng)
+GEMINI_API_KEYS: list[str] = [k for k in [GEMINI_API_KEY, FALLBACK_KEY_1, FALLBACK_KEY_2] if k]
+
 # ── Thư mục gốc ──────────────────────────────────────────────────
 RAW_DIR   = "Raw_English"
 TRANS_DIR = "Translated_VN"
@@ -44,7 +58,6 @@ DATA_DIR  = Path("data")
 LOG_DIR   = Path("logs")
 
 # ── Glossary (phân category) ──────────────────────────────────────
-# Muốn thêm category mới: chỉ thêm 1 dòng vào dict này.
 GLOSSARY_DIR = DATA_DIR / "glossary"
 GLOSSARY_FILES = {
     "pathways"      : GLOSSARY_DIR / "Glossary_Pathways.md",
@@ -56,20 +69,15 @@ GLOSSARY_FILES = {
 STAGING_TERMS_FILE = GLOSSARY_DIR / "Staging_Terms.md"
 
 # ── Skills ───────────────────────────────────────────────────────
-# Lưu toàn bộ kỹ năng đã biết: tên EN → VN, chủ sở hữu, tiến hóa từ đâu
 SKILLS_FILE = DATA_DIR / "skills" / "Skills.json"
 
 # ── Characters (phân tầng) ────────────────────────────────────────
-# Active  = xuất hiện trong ARCHIVE_AFTER_CHAPTERS chương gần nhất
-# Archive = lâu không xuất hiện, chỉ load khi tên có trong chương
 CHAR_DIR               = DATA_DIR / "characters"
 CHARACTERS_ACTIVE_FILE  = CHAR_DIR / "Characters_Active.json"
 CHARACTERS_ARCHIVE_FILE = CHAR_DIR / "Characters_Archive.json"
 STAGING_CHARS_FILE      = CHAR_DIR / "Staging_Characters.json"
 
 # ── Memory ────────────────────────────────────────────────────────
-# Context_Notes = ngắn hạn, XÓA & tạo lại mỗi SCOUT_REFRESH_EVERY chương
-# Arc_Memory    = dài hạn, CHỈ APPEND, không bao giờ xóa
 MEM_DIR            = DATA_DIR / "memory"
 CONTEXT_NOTES_FILE = MEM_DIR / "Context_Notes.md"
 ARC_MEMORY_FILE    = MEM_DIR / "Arc_Memory.md"
@@ -91,7 +99,11 @@ SCOUT_REFRESH_EVERY = int(os.environ.get("SCOUT_REFRESH_EVERY", "5"))
 ARC_MEMORY_WINDOW   = int(os.environ.get("ARC_MEMORY_WINDOW",   "3"))
 
 # ── Tiered Characters ─────────────────────────────────────────────
-ARCHIVE_AFTER_CHAPTERS = int(os.environ.get("ARCHIVE_AFTER_CHAPTERS", "60"))
+ARCHIVE_AFTER_CHAPTERS  = int(os.environ.get("ARCHIVE_AFTER_CHAPTERS",  "60"))
+
+# ── [v4] Emotion Tracker ──────────────────────────────────────────
+# emotional_state reset về "normal" sau N chương nếu scout không update
+EMOTION_RESET_CHAPTERS  = int(os.environ.get("EMOTION_RESET_CHAPTERS",  "5"))
 
 # ── Merge & Retry ─────────────────────────────────────────────────
 IMMEDIATE_MERGE       = os.environ.get("IMMEDIATE_MERGE",       "true").lower()  == "true"

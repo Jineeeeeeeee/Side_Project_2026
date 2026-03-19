@@ -9,14 +9,11 @@ Thay vì 1 file duy nhất, v3 dùng nhiều file:
   data/glossary/Glossary_General.md       ← Thuật ngữ chung, tên riêng
   data/glossary/Staging_Terms.md          ← Thuật ngữ mới, chờ phân loại
 
-Ưu điểm:
-  - Dễ quản lý khi glossary lớn (1000+ dòng)
-  - Thêm category mới: chỉ thêm 1 dòng vào GLOSSARY_FILES trong config
-  - filter_glossary() trả về dict {category: [dòng]} → prompt hiển thị có nhóm
-
-filter_glossary() dùng Aho-Corasick nếu có (nhanh hơn regex ~10x với 1000+ terms).
+[v4] FIX: Aho-Corasick cache key bao gồm max_mtime của tất cả file glossary.
+  Nếu người dùng sửa thủ công một file giữa chừng → cache tự invalidate → rebuild automaton.
+  Cache size giới hạn _AHO_CACHE_MAX để tránh memory leak.
 """
-import re, threading, logging
+import os, re, threading, logging, time
 from .config import GLOSSARY_FILES, STAGING_TERMS_FILE, IMMEDIATE_MERGE
 from .io_utils import load_text, save_text_atomic
 
@@ -26,9 +23,10 @@ except ImportError:
     _AHO = False
 
 _lock     = threading.Lock()
-_aho_cache: dict = {}
+_aho_cache: dict = {}          # key → (Automaton, timestamp)
 _aho_lock = threading.Lock()
 _NEW_SECTION = "Mới — chờ phân loại"
+_AHO_CACHE_MAX = 5             # giữ tối đa 5 phiên bản automaton
 
 
 # ── Parse ────────────────────────────────────────────────────────
@@ -99,16 +97,56 @@ def _add(d: dict, cat: str, line: str):
     if line not in d[cat]:
         d[cat].append(line)
 
+
+# ── [v4 FIX ①] Aho-Corasick cache với mtime invalidation ────────
+def _get_glossary_mtime() -> float:
+    """
+    Trả về mtime lớn nhất trong tất cả file glossary.
+    Nếu file không tồn tại → bỏ qua.
+    """
+    all_paths = list(GLOSSARY_FILES.values()) + [STAGING_TERMS_FILE]
+    mtimes = []
+    for p in all_paths:
+        try:
+            mtimes.append(os.path.getmtime(str(p)))
+        except OSError:
+            pass
+    return max(mtimes) if mtimes else 0.0
+
+
 def _get_automaton(flat: dict):
-    key = hash(frozenset(flat.keys()))
+    """
+    Trả về Aho-Corasick automaton đã build.
+
+    Cache key = (hash của term keys, rounded mtime) để đảm bảo:
+      - Term mới được thêm vào → keys thay đổi → cache miss
+      - File glossary bị sửa thủ công mid-run → mtime thay đổi → cache miss
+      - Không có gì thay đổi → cache hit, không rebuild
+
+    Cache bị giới hạn _AHO_CACHE_MAX entry để tránh memory leak.
+    """
+    mtime_rounded = round(_get_glossary_mtime())  # round về giây để tránh float noise
+    cache_key = hash((frozenset(flat.keys()), mtime_rounded))
+
     with _aho_lock:
-        if key not in _aho_cache:
-            A = ahocorasick.Automaton()
-            for t, payload in flat.items():
-                A.add_word(t, (t, payload))
-            A.make_automaton()
-            _aho_cache[key] = A
-        return _aho_cache[key]
+        if cache_key in _aho_cache:
+            return _aho_cache[cache_key]
+
+        # Build automaton mới
+        A = ahocorasick.Automaton()
+        for t, payload in flat.items():
+            A.add_word(t, (t, payload))
+        A.make_automaton()
+
+        # Evict entry cũ nhất nếu cache đầy
+        if len(_aho_cache) >= _AHO_CACHE_MAX:
+            oldest_key = next(iter(_aho_cache))
+            del _aho_cache[oldest_key]
+            logging.debug(f"[Glossary] Aho-Corasick cache evict (size={_AHO_CACHE_MAX})")
+
+        _aho_cache[cache_key] = A
+        logging.debug(f"[Glossary] Aho-Corasick rebuilt (terms={len(flat)}, mtime={mtime_rounded})")
+        return A
 
 
 # ── Write ────────────────────────────────────────────────────────
