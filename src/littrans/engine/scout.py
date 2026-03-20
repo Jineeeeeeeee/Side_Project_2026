@@ -9,6 +9,8 @@ Mỗi SCOUT_REFRESH_EVERY chương:
 Không raise — pipeline tiếp tục nếu Scout thất bại.
 
 [v4.2] Validate emotional_states là list + giá trị hợp lệ trước khi ghi DB.
+[v4.3 FIX] Xoá dead import `from google.genai import types` — không dùng trực tiếp ở đây;
+           mọi API call đã được đóng gói trong littrans.llm.client.
 """
 from __future__ import annotations
 
@@ -16,8 +18,6 @@ import os
 import re
 import json
 import logging
-
-from google.genai import types
 
 from littrans.config.settings import settings
 from littrans.utils.io_utils import load_text, atomic_write, load_json, save_json
@@ -68,7 +68,7 @@ Quy tắc:
 - "changed" : vừa trải qua sự kiện lớn thay đổi nhận thức/mục tiêu
 - Chỉ nhân vật có tên rõ ràng và xuất hiện đáng kể. Tối đa 8 nhân vật."""
 
-_VALID_STATES     = {"normal", "angry", "hurt", "changed"}
+_VALID_STATES      = {"normal", "angry", "hurt", "changed"}
 _VALID_INTENSITIES = {"low", "medium", "high"}
 
 
@@ -187,14 +187,12 @@ def _update_emotional_states(all_files: list[str], current_index: int) -> None:
         logging.error(f"Emotion extract: {e}")
         return
 
-    # ── Validate response structure ───────────────────────────────
     if not isinstance(data, dict):
         logging.warning(f"[Emotion] Response không phải dict: {type(data)}")
         return
 
     states = data.get("emotional_states", [])
 
-    # Phòng trường hợp AI trả về string hoặc null thay vì list
     if not isinstance(states, list):
         logging.warning(
             f"[Emotion] 'emotional_states' không phải list "
@@ -209,9 +207,8 @@ def _update_emotional_states(all_files: list[str], current_index: int) -> None:
     chars     = char_data.get("characters", {})
     updated   = 0
 
-    # Reset nhân vật lâu không update
     for name, profile in chars.items():
-        em     = profile.get("emotional_state", {})
+        em      = profile.get("emotional_state", {})
         last_ch = em.get("last_chapter_index", 0)
         if (current_index - last_ch) >= settings.emotion_reset_chapters:
             if em.get("current", "normal") != "normal":
@@ -219,9 +216,7 @@ def _update_emotional_states(all_files: list[str], current_index: int) -> None:
                 profile["emotional_state"]["reset_at"] = current_index
                 updated += 1
 
-    # Cập nhật từ kết quả scout
     for entry in states:
-        # Validate từng entry
         if not isinstance(entry, dict):
             continue
 
@@ -234,7 +229,6 @@ def _update_emotional_states(all_files: list[str], current_index: int) -> None:
         intensity = entry.get("intensity", "medium")
         reason    = entry.get("reason", "")
 
-        # Validate giá trị enum
         if state not in _VALID_STATES:
             logging.warning(f"[Emotion] '{char_name}' state='{state}' không hợp lệ → 'normal'")
             state = "normal"

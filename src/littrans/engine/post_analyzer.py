@@ -3,14 +3,19 @@ src/littrans/engine/post_analyzer.py — Post-call: review + extract metadata.
 
 Chạy SAU Translation call. Làm 2 việc:
   1. Đánh giá chất lượng bản dịch:
-       - Lỗi trình bày/cấu trúc → tự sửa (auto_fix)
+       - Lỗi trình bày/cấu trúc → gọi _auto_fix_call() riêng (plain text)
        - Lỗi dịch thuật (tên, kỹ năng, pronoun) → yêu cầu retry Trans-call
   2. Extract metadata đầy đủ:
        new_terms, new_characters (full profile), relationship_updates, skill_updates
 
 Severity:
-  auto_fix       → Post-call tự sửa trong auto_fixed_translation
+  auto_fix       → gọi plain-text call để sửa → không nhồi text khổng lồ vào JSON
   retry_required → Trans-call cần chạy lại với retry_instruction
+
+[v4.3 FIX] auto_fixed_translation KHÔNG còn nằm trong JSON response.
+  Lý do: JSON output token bị giới hạn → text dài dễ bị truncate → json.loads fail
+  hoặc LLM trả về chuỗi tóm tắt thay vì full text → ghi đè mất bản dịch.
+  Giải pháp: Nếu có auto_fix issues → gọi thêm 1 plain-text call nhỏ để sửa.
 
 Không raise — nếu lỗi hoàn toàn, trả về PostResult với translation gốc + metadata rỗng.
 """
@@ -60,8 +65,10 @@ class PostResult:
         return any(i.severity == "auto_fix" for i in self.issues)
 
 
-# ── System prompt ─────────────────────────────────────────────────
+# ── System prompts ────────────────────────────────────────────────
 
+# [v4.3] JSON call chỉ trả về issues + metadata — KHÔNG có auto_fixed_translation.
+# Tách riêng để tránh truncate JSON khi chương dài.
 _POST_SYSTEM = """Bạn là AI editor chuyên review bản dịch LitRPG / Tu Tiên.
 
 Bạn nhận được:
@@ -74,7 +81,7 @@ NHIỆM VỤ 1 — ĐÁNH GIÁ CHẤT LƯỢNG
 ═══════════════════════════════════════════════════════════
 Phân loại lỗi theo severity:
 
-auto_fix (tự sửa trong auto_fixed_translation):
+auto_fix (sẽ được sửa bằng call riêng — chỉ cần MÔ TẢ lỗi, không cần sửa ở đây):
   - Thiếu dòng trống giữa các đoạn văn thường
   - Thoại bị dính dòng (2 người nói cùng dòng)
   - System box / bảng hệ thống có dòng trống thừa GIỮA các dòng trong box
@@ -131,16 +138,10 @@ Quy tắc relationships.dynamic:
 
 ═══════════════════════════════════════════════════════════
 
-QUAN TRỌNG khi viết auto_fixed_translation:
-  - Chỉ sửa đúng những gì bị đánh dấu auto_fix
-  - Giữ nguyên toàn bộ nội dung còn lại
-  - Nếu không có lỗi auto_fix → để auto_fixed_translation = ""
-
 Trả về JSON. KHÔNG thêm bất cứ thứ gì ngoài JSON:
 {
   "quality": {
     "passed": true,
-    "auto_fixed_translation": "",
     "issues": [
       {
         "type": "format|structure|name_leak|pronoun|style|missing",
@@ -232,6 +233,17 @@ Trả về JSON. KHÔNG thêm bất cứ thứ gì ngoài JSON:
 }"""
 
 
+# [v4.3] Prompt cho plain-text auto-fix call riêng biệt.
+# Chỉ chạy khi có auto_fix issues — input nhỏ, output là plain text → không lo truncate.
+_AUTO_FIX_SYSTEM = """Bạn là AI editor chỉnh sửa trình bày bản dịch tiếng Việt.
+
+Nhận vào: bản dịch + danh sách lỗi trình bày cụ thể.
+Yêu cầu:
+  • Sửa ĐÚNG các lỗi được liệt kê, không thêm không bớt.
+  • KHÔNG thay đổi bất kỳ nội dung, từ ngữ, tên, hay ý nghĩa nào khác.
+  • Trả về bản dịch đã sửa — plain text, KHÔNG JSON, KHÔNG code block, KHÔNG lời giải thích."""
+
+
 # ── Public API ────────────────────────────────────────────────────
 
 def run(
@@ -242,6 +254,12 @@ def run(
 ) -> PostResult:
     """
     Chạy Post-call. Trả về PostResult.
+
+    Flow:
+      1. call_gemini_json → quality issues + metadata (JSON nhỏ, không có full text)
+      2. Nếu có auto_fix issues → gọi thêm plain-text call để sửa trình bày
+      3. Trả về PostResult với final_translation đã sửa (nếu cần)
+
     Không raise — lỗi trả về PostResult với translation gốc + metadata rỗng.
     """
     if not translation.strip():
@@ -257,7 +275,7 @@ def run(
     try:
         from littrans.llm.client import call_gemini_json
         data = call_gemini_json(_POST_SYSTEM, user_msg)
-        return _parse(data, translation, source_filename)
+        result = _parse(data, translation, source_filename)
     except Exception as e:
         logging.error(f"[PostAnalyzer] {source_filename} | {e}")
         print(f"  ⚠️  Post-call lỗi: {e} → dùng bản dịch gốc, bỏ qua metadata")
@@ -266,6 +284,59 @@ def run(
             passed            = True,   # không block pipeline
             ok                = False,
         )
+
+    # ── Bước 2: Auto-fix bằng plain-text call riêng ───────────────
+    # [v4.3] Tách khỏi JSON để tránh truncation và ghi đè nhầm.
+    if result.has_auto_fix():
+        auto_fix_issues = [i for i in result.issues if i.severity == "auto_fix"]
+        fixed = _auto_fix_call(translation, auto_fix_issues, source_filename)
+        if fixed:
+            result.final_translation = fixed
+            result.auto_fixed        = True
+
+    return result
+
+
+# ── Auto-fix plain-text call ──────────────────────────────────────
+
+def _auto_fix_call(
+    translation : str,
+    issues      : list[QualityIssue],
+    filename    : str = "",
+) -> str:
+    """
+    Gọi LLM với plain-text output để sửa lỗi trình bày.
+    Trả về bản dịch đã sửa, hoặc chuỗi rỗng nếu lỗi / kết quả không hợp lệ.
+    """
+    issue_lines = "\n".join(
+        f"  - [{i.type}] {i.detail}"
+        + (f" | vị trí: «{i.location}»" if i.location else "")
+        for i in issues
+    )
+    user_msg = (
+        f"## LỖI TRÌNH BÀY CẦN SỬA\n{issue_lines}\n\n"
+        f"## BẢN DỊCH\n{translation}"
+    )
+
+    try:
+        from littrans.llm.client import call_gemini_text
+        fixed = call_gemini_text(_AUTO_FIX_SYSTEM, user_msg).strip()
+    except Exception as e:
+        logging.error(f"[PostAnalyzer.AutoFix] {filename} | {e}")
+        print(f"  ⚠️  Auto-fix call lỗi: {e} → giữ nguyên bản dịch")
+        return ""
+
+    # Sanity check: bản sửa phải đủ dài (≥ 50% độ dài gốc) để không ghi đè nhầm
+    MIN_RATIO = 0.50
+    if not fixed or len(fixed) < len(translation) * MIN_RATIO:
+        logging.warning(
+            f"[PostAnalyzer.AutoFix] {filename} | Kết quả quá ngắn "
+            f"({len(fixed)} / {len(translation)} ký tự) → bỏ qua"
+        )
+        print(f"  ⚠️  Auto-fix trả về văn bản quá ngắn → giữ nguyên bản dịch gốc")
+        return ""
+
+    return fixed
 
 
 # ── Helpers ───────────────────────────────────────────────────────
@@ -309,18 +380,8 @@ def _parse(data: dict, original_translation: str, filename: str) -> PostResult:
             detail   = raw.get("detail", ""),
         ))
 
-    passed  = bool(quality.get("passed", True))
-    auto_tx = quality.get("auto_fixed_translation", "").strip()
-    retry   = quality.get("retry_instruction", "").strip()
-
-    has_auto_fix_issues = any(i.severity == "auto_fix" for i in issues)
-    if has_auto_fix_issues and auto_tx:
-        final_translation = auto_tx
-        auto_fixed        = True
-        _log_fixes(issues, filename)
-    else:
-        final_translation = original_translation
-        auto_fixed        = False
+    passed = bool(quality.get("passed", True))
+    retry  = quality.get("retry_instruction", "").strip()
 
     retry_issues = [i for i in issues if i.severity == "retry_required"]
     if retry_issues:
@@ -329,8 +390,13 @@ def _parse(data: dict, original_translation: str, filename: str) -> PostResult:
                 f"[PostAnalyzer] {filename} | {issue.type} | {issue.detail} | at: {issue.location}"
             )
 
+    if [i for i in issues if i.severity == "auto_fix"]:
+        count = sum(1 for i in issues if i.severity == "auto_fix")
+        logging.info(f"[PostAnalyzer] {filename} | auto_fix {count} lỗi: "
+                     + "; ".join(i.type for i in issues if i.severity == "auto_fix"))
+
     return PostResult(
-        final_translation    = final_translation,
+        final_translation    = original_translation,  # auto_fix sẽ cập nhật sau nếu cần
         passed               = passed,
         issues               = issues,
         retry_instruction    = retry,
@@ -339,17 +405,8 @@ def _parse(data: dict, original_translation: str, filename: str) -> PostResult:
         relationship_updates = _safe_list(metadata.get("relationship_updates")),
         skill_updates        = _safe_list(metadata.get("skill_updates")),
         ok                   = True,
-        auto_fixed           = auto_fixed,
+        auto_fixed           = False,  # sẽ được set True bởi _auto_fix_call nếu thành công
     )
-
-
-def _log_fixes(issues: list[QualityIssue], filename: str) -> None:
-    fix_issues = [i for i in issues if i.severity == "auto_fix"]
-    if fix_issues:
-        logging.info(
-            f"[PostAnalyzer] {filename} | auto_fix {len(fix_issues)} lỗi: "
-            + "; ".join(i.type for i in fix_issues)
-        )
 
 
 def _safe_list(v: Any) -> list:

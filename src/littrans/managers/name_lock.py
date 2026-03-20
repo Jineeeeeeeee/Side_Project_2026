@@ -11,6 +11,10 @@ Quy tắc:
   - Tên giữ nguyên tiếng Anh (canonical == tên gốc) → KHÔNG đưa vào bảng
   - Tên đã dịch → LOCK, không thay đổi sau đó
   - Conflict → giữ bản lock đầu tiên, log cảnh báo
+
+[v4.3 FIX] validate_translation: dùng lookaround Unicode thay vì \\b.
+  \\b hoạt động kém với tên có dấu tiếng Việt và ký tự đặc biệt (gạch ngang, dấu chấm).
+  Lookaround (?<![^\\W_])...(?![^\\W_]) nhất quán với cách xử lý trong characters.py.
 """
 from __future__ import annotations
 
@@ -106,7 +110,16 @@ def format_for_prompt(table: dict[str, str]) -> str:
 # ── Validate translation ──────────────────────────────────────────
 
 def validate_translation(translation: str, table: dict[str, str]) -> list[str]:
-    """Quét bản dịch → phát hiện tên tiếng Anh còn sót."""
+    """
+    Quét bản dịch → phát hiện tên tiếng Anh còn sót.
+
+    [FIX] Dùng lookaround Unicode thay vì \\b để xử lý đúng:
+      - Tên có dấu tiếng Việt (ký tự ngoài ASCII)
+      - Tên có ký tự đặc biệt: "T-Rex", "Mr.X", "System.Core"
+      - \\b định nghĩa biên dựa trên [\\w] = [a-zA-Z0-9_] → bỏ sót ký tự có dấu
+
+    Pattern (?<![^\\W_])...(?![^\\W_]) tương đương với characters.py và token_budget.py.
+    """
     if not table or not translation:
         return []
     MIN_LEN  = 4
@@ -115,7 +128,8 @@ def validate_translation(translation: str, table: dict[str, str]) -> list[str]:
         if len(eng) < MIN_LEN:
             continue
         try:
-            if re.search(rf"\b{re.escape(eng)}\b", translation, re.IGNORECASE):
+            pattern = rf"(?<![^\W_]){re.escape(eng)}(?![^\W_])"
+            if re.search(pattern, translation, re.IGNORECASE | re.UNICODE):
                 warnings.append(f"  ⚠️  Tên gốc '{eng}' còn sót → phải dùng '{vn}'")
         except re.error:
             pass

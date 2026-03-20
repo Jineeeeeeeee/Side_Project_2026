@@ -3,51 +3,9 @@ src/littrans/config/settings.py — Toàn bộ cấu hình pipeline.
 
 Chỉnh qua .env, KHÔNG sửa file này.
 
-.env mẫu:
-    # API
-    GEMINI_API_KEY=AIza...
-    FALLBACK_KEY_1=AIza...
-    FALLBACK_KEY_2=AIza...
-    KEY_ROTATE_THRESHOLD=3
-    GEMINI_MODEL=gemini-2.0-flash-exp
-
-    # Pipeline
-    MAX_RETRIES=5
-    SUCCESS_SLEEP=30
-    RATE_LIMIT_SLEEP=60
-    MIN_CHARS_PER_CHAPTER=500
-
-    # 3-Call Architecture
-    USE_THREE_CALL=true
-    PRE_CALL_SLEEP=5
-    POST_CALL_SLEEP=5
-    POST_CALL_MAX_RETRIES=2
-    TRANS_RETRY_ON_QUALITY=true
-
-    # Scout
-    SCOUT_LOOKBACK=10
-    SCOUT_REFRESH_EVERY=5
-    ARC_MEMORY_WINDOW=3
-
-    # Characters
-    ARCHIVE_AFTER_CHAPTERS=60
-    EMOTION_RESET_CHAPTERS=5
-
-    # Merge
-    IMMEDIATE_MERGE=true
-    AUTO_MERGE_GLOSSARY=false
-    AUTO_MERGE_CHARACTERS=false
-    RETRY_FAILED_PASSES=3
-
-    # Token budget (0 = off)
-    BUDGET_LIMIT=150000
-
-    # Paths (thường không cần đổi)
-    INPUT_DIR=inputs
-    OUTPUT_DIR=outputs
-    DATA_DIR=data
-    LOG_DIR=logs
-    PROMPTS_DIR=prompts
+[v4.3 FIX] _env_bool() xử lý đầy đủ các giá trị truthy phổ biến:
+  true / True / TRUE / 1 / yes / on → True
+  false / False / FALSE / 0 / no / off / (rỗng) → False
 """
 from __future__ import annotations
 
@@ -68,7 +26,16 @@ def _env_int(key: str, default: int) -> int:
     return int(os.environ.get(key, str(default)))
 
 def _env_bool(key: str, default: bool) -> bool:
-    return os.environ.get(key, str(default)).lower() == "true"
+    """
+    Parse boolean từ environment variable.
+    Chấp nhận: true/True/TRUE/1/yes/on → True
+               false/False/FALSE/0/no/off/(rỗng) → False
+    [FIX] Phiên bản cũ chỉ nhận "true", bỏ sót 1/yes/on.
+    """
+    val = os.environ.get(key, "").strip().lower()
+    if not val:
+        return default
+    return val in ("true", "1", "yes", "on")
 
 
 @dataclass
@@ -88,17 +55,10 @@ class Settings:
     min_behavior_conf     : float = 0.65
 
     # ── 3-Call Architecture ───────────────────────────────────────
-    # Bật/tắt toàn bộ 3-call flow. False = giữ nguyên flow cũ 1-call.
     use_three_call        : bool = field(default_factory=lambda: _env_bool("USE_THREE_CALL", True))
-
-    # Sleep giữa các call trong cùng 1 chương — tránh TPM spike
     pre_call_sleep        : int  = field(default_factory=lambda: _env_int("PRE_CALL_SLEEP", 5))
     post_call_sleep       : int  = field(default_factory=lambda: _env_int("POST_CALL_SLEEP", 5))
-
-    # Số lần retry Trans-call khi Post-call phát hiện retry_required
     post_call_max_retries : int  = field(default_factory=lambda: _env_int("POST_CALL_MAX_RETRIES", 2))
-
-    # Có retry Trans-call khi Post-call báo lỗi dịch thuật không
     trans_retry_on_quality: bool = field(default_factory=lambda: _env_bool("TRANS_RETRY_ON_QUALITY", True))
 
     # ── Scout ────────────────────────────────────────────────────
@@ -130,13 +90,11 @@ class Settings:
         if not self.gemini_api_key:
             sys.exit("❌ Thiếu GEMINI_API_KEY trong .env")
 
-        # Đảm bảo thư mục tồn tại
         for p in [self.input_dir, self.output_dir, self.data_dir, self.log_dir,
                   self.glossary_dir, self.char_dir, self.memory_dir,
                   self.skills_file.parent]:
             p.mkdir(parents=True, exist_ok=True)
 
-        # Logging
         self.log_dir.mkdir(parents=True, exist_ok=True)
         logging.basicConfig(
             filename=str(self.log_dir / "pipeline.log"),

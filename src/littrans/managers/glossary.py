@@ -6,6 +6,7 @@ src/littrans/managers/glossary.py — Glossary phân category + Aho-Corasick fil
   Glossary_Locations.md     Glossary_General.md          Staging_Terms.md
 
 [v4 FIX] Aho-Corasick cache key bao gồm max_mtime → tự invalidate khi file thay đổi.
+[v4.3 FIX] Không làm tròn mtime — tránh cache stale khi file được ghi trong cùng 1 giây.
 """
 from __future__ import annotations
 
@@ -112,8 +113,11 @@ def _get_mtime() -> float:
 
 
 def _get_automaton(flat: dict):
-    mtime_rounded = round(_get_mtime())
-    cache_key     = hash((frozenset(flat.keys()), mtime_rounded))
+    # [FIX] Dùng mtime chính xác (float), KHÔNG làm tròn.
+    # Làm tròn gây cache stale khi clean_glossary ghi file và pipeline chạy tiếp
+    # trong cùng 1 giây (mtime chênh < 0.5s → round() trả về cùng giá trị).
+    mtime_exact = _get_mtime()
+    cache_key   = hash((frozenset(flat.keys()), mtime_exact))
 
     with _aho_lock:
         if cache_key in _aho_cache:
