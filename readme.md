@@ -1,356 +1,356 @@
-# LiTTrans v4.1 — LitRPG / Tu Tiên Translation Pipeline
+# LiTTrans v4.2 — LitRPG / Tu Tiên Translation Pipeline
 
-> Pipeline dịch tự động truyện LitRPG / Tu Tiên từ tiếng Anh sang tiếng Việt, chạy bằng **Gemini AI**. Giữ nhất quán tên nhân vật, xưng hô, thuật ngữ và kỹ năng xuyên suốt hàng trăm chương.
+> Pipeline dịch tự động truyện LitRPG / Tu Tiên từ tiếng Anh sang tiếng Việt, chạy bằng **Gemini AI**.  
+> Giữ nhất quán tên nhân vật, xưng hô, thuật ngữ và kỹ năng xuyên suốt hàng trăm chương.  
+> Có thể dùng qua **CLI** hoặc **Web UI** (Streamlit).
 
 ---
 
 ## Mục lục
 
-1. [Tổng quan kiến trúc](#1-tổng-quan-kiến-trúc)
+1. [Yêu cầu hệ thống](#1-yêu-cầu-hệ-thống)
 2. [Cài đặt](#2-cài-đặt)
 3. [Cấu hình `.env`](#3-cấu-hình-env)
-4. [Cách dùng (CLI)](#4-cách-dùng-cli)
-5. [Pipeline chi tiết](#5-pipeline-chi-tiết)
-6. [Data layer](#6-data-layer)
-7. [Scout AI & Memory](#7-scout-ai--memory)
-8. [Name Lock & Quality Guard](#8-name-lock--quality-guard)
-9. [Cấu trúc thư mục](#9-cấu-trúc-thư-mục)
-10. [Đánh giá & điểm mạnh / hạn chế](#10-đánh-giá--điểm-mạnh--hạn-chế)
+4. [Cách dùng — Web UI](#4-cách-dùng--web-ui)
+5. [Cách dùng — CLI](#5-cách-dùng--cli)
+6. [Cấu trúc thư mục](#6-cấu-trúc-thư-mục)
+7. [Pipeline chi tiết](#7-pipeline-chi-tiết)
+8. [Data layer](#8-data-layer)
+9. [Scout AI & Memory](#9-scout-ai--memory)
+10. [Name Lock & Quality Guard](#10-name-lock--quality-guard)
+11. [Điểm mạnh & hạn chế](#11-điểm-mạnh--hạn-chế)
 
 ---
 
-## 1. Tổng quan kiến trúc
+## 1. Yêu cầu hệ thống
 
-```
-inputs/          →  Pipeline  →  outputs/
-(*.txt / *.md)      (Gemini)     (*_VN.txt)
-                        ↕
-                   data/
-                   ├── glossary/        (5 category files + staging)
-                   ├── characters/      (Active / Archive / Staging JSON)
-                   ├── skills/          (Skills.json — evolution chain)
-                   └── memory/          (Arc_Memory.md + Context_Notes.md)
-```
-
-**Luồng xử lý mỗi chương:**
-
-```
-Input file
-  → [Scout AI mỗi N chương]  → Context_Notes.md, Arc_Memory.md
-  → Build context             → filter glossary, chars, name lock, skills
-  → Prompt builder            → 8-section system prompt + token budget
-  → Gemini API call           → TranslationResult (JSON structured output)
-  → Quality guard             → retry nếu dính dòng / mất đoạn
-  → Write output              → atomic write → outputs/*_VN.txt
-  → Update data               → new_terms, new_characters, skill_updates
-  → [Loop / Final merge]
-```
+| Thành phần | Yêu cầu tối thiểu |
+|---|---|
+| Python | **3.11** trở lên |
+| Gemini API key | Bắt buộc — lấy tại [aistudio.google.com](https://aistudio.google.com) |
+| RAM | 512 MB (không load model local) |
+| Hệ điều hành | Windows / macOS / Linux |
 
 ---
 
 ## 2. Cài đặt
 
-**Yêu cầu:** Python ≥ 3.11
-
 ```bash
-# Clone repo
+# 1. Clone hoặc giải nén project
 git clone <repo-url>
 cd littrans
 
-# Cài dependencies
+# 2. (Khuyến nghị) Tạo virtual environment
+python -m venv .venv
+source .venv/bin/activate        # macOS / Linux
+.venv\Scripts\activate           # Windows
+
+# 3. Cài dependencies cốt lõi (CLI)
 pip install -e .
 
-# Cài thêm Aho-Corasick để filter glossary nhanh hơn ~10x (khuyến nghị)
+# 4. Cài Aho-Corasick để filter glossary nhanh ~10x (khuyến nghị)
 pip install ".[fast]"
 
-# Tạo file cấu hình
-cp .env.example .env
-# → Điền GEMINI_API_KEY vào .env
+# 5. Cài thêm nếu muốn dùng Web UI
+pip install streamlit pandas
 ```
+
+> **Windows:** nếu gặp lỗi encoding khi chạy, thêm `set PYTHONUTF8=1` trước lệnh.
 
 ---
 
 ## 3. Cấu hình `.env`
 
+Sao chép file mẫu rồi điền thông tin:
+
+```bash
+cp .env.example .env
+```
+
+Mở `.env` và chỉnh các giá trị sau:
+
 ```env
-# ── API ──────────────────────────────────────────────
-GEMINI_API_KEY=AIza...          # Bắt buộc
-FALLBACK_KEY_1=                  # Key dự phòng 1 (optional)
-FALLBACK_KEY_2=                  # Key dự phòng 2 (optional)
-KEY_ROTATE_THRESHOLD=3           # Số lỗi liên tiếp trước khi rotate key
-GEMINI_MODEL=gemini-2.5-flash    # Model sử dụng
+# ── BẮT BUỘC ──────────────────────────────────────────────────────
+GEMINI_API_KEY=AIzaSy...          # API key chính
 
-# ── Pipeline ─────────────────────────────────────────
-MAX_RETRIES=5                    # Số lần retry mỗi chương khi lỗi API
-SUCCESS_SLEEP=30                 # Nghỉ (giây) sau mỗi chương thành công
-RATE_LIMIT_SLEEP=60              # Nghỉ (giây) khi bị rate limit
-MIN_CHARS_PER_CHAPTER=500        # Cảnh báo nếu chương quá ngắn
+# ── TÙY CHỌN — Key dự phòng (rotate khi primary bị rate limit) ───
+FALLBACK_KEY_1=                   # Key dự phòng 1
+FALLBACK_KEY_2=                   # Key dự phòng 2
+KEY_ROTATE_THRESHOLD=3            # Số lỗi liên tiếp trước khi chuyển key
 
-# ── Scout AI ─────────────────────────────────────────
-SCOUT_LOOKBACK=10                # Đọc N chương trước để phân tích
-SCOUT_REFRESH_EVERY=5            # Chạy Scout mỗi N chương
-ARC_MEMORY_WINDOW=3              # Hiển thị N arc entry gần nhất trong prompt
+# ── MODEL ─────────────────────────────────────────────────────────
+GEMINI_MODEL=gemini-2.5-flash     # Khuyến nghị: flash (nhanh, rẻ) hoặc pro (chất lượng cao)
 
-# ── Characters ───────────────────────────────────────
-ARCHIVE_AFTER_CHAPTERS=60        # Archive nhân vật sau N chương không thấy
-EMOTION_RESET_CHAPTERS=5         # Reset cảm xúc về "normal" sau N chương
+# ── PIPELINE ──────────────────────────────────────────────────────
+USE_THREE_CALL=true               # true = Pre+Trans+Post call | false = 1-call legacy
+MAX_RETRIES=5
+SUCCESS_SLEEP=30                  # Nghỉ (giây) sau mỗi chương thành công
+RATE_LIMIT_SLEEP=60               # Nghỉ (giây) khi bị rate limit 429
 
-# ── Merge & Retry ────────────────────────────────────
-IMMEDIATE_MERGE=true             # Merge staging → active sau mỗi chương
-AUTO_MERGE_GLOSSARY=false        # Tự động clean glossary sau pipeline
-AUTO_MERGE_CHARACTERS=false      # Tự động merge characters sau pipeline
-RETRY_FAILED_PASSES=3            # Số lần retry pass cho chương thất bại
+# ── SCOUT AI ──────────────────────────────────────────────────────
+SCOUT_REFRESH_EVERY=5             # Chạy Scout mỗi N chương
+SCOUT_LOOKBACK=10                 # Đọc N chương gần nhất
+ARC_MEMORY_WINDOW=3               # Số arc entry đưa vào prompt
 
-# ── Token Budget (0 = tắt) ───────────────────────────
-BUDGET_LIMIT=150000              # Giới hạn token prompt (0 = không giới hạn)
+# ── TOKEN BUDGET ──────────────────────────────────────────────────
+BUDGET_LIMIT=150000               # 0 = tắt giới hạn
 
-# ── Paths ─────────────────────────────────────────────
+# ── ĐƯỜNG DẪN (thường không cần đổi) ─────────────────────────────
 INPUT_DIR=inputs
 OUTPUT_DIR=outputs
 DATA_DIR=data
-LOG_DIR=logs
-PROMPTS_DIR=prompts
+```
+
+> **Tip:** Nếu dùng Web UI, tất cả các tham số trên đều có thể chỉnh trực tiếp trong tab **Cài đặt** mà không cần sửa file `.env` thủ công.
+
+---
+
+## 4. Cách dùng — Web UI
+
+Web UI là cách dùng được khuyến nghị cho người không quen CLI.
+
+### Khởi động
+
+```bash
+python run_ui.py
+```
+
+Mở trình duyệt và truy cập: **http://localhost:8501**
+
+```bash
+# Đổi port nếu 8501 đã bị dùng
+python run_ui.py --port 8502
+
+# Mở cho máy khác trong cùng mạng LAN truy cập
+python run_ui.py --host 0.0.0.0 --port 8501
 ```
 
 ---
 
-## 4. Cách dùng (CLI)
+### Lần đầu sử dụng (Web UI)
+
+#### Bước 1 — Cài API key
+
+Mở tab **⚙️ Cài đặt → 🔑 API**, điền `GEMINI_API_KEY`, nhấn **💾 Lưu .env**.
+
+#### Bước 2 — Upload file chương
+
+Mở tab **📄 Dịch**, kéo thả file `.txt` hoặc `.md` vào ô upload.  
+File sẽ được lưu vào thư mục `inputs/` tự động.
+
+> **Định dạng file:** Mỗi file = một chương. Đặt tên theo thứ tự để pipeline sắp xếp đúng.  
+> Ví dụ: `chapter_001.txt`, `chapter_002.txt`, ...
+
+#### Bước 3 — Chạy pipeline
+
+Nhấn **▶ Chạy pipeline**. Log sẽ stream theo thời gian thực, hiển thị từng bước:
+- Scout AI phân tích context
+- Pre-call xác định tên / skill / xưng hô
+- Trans-call dịch nội dung
+- Post-call kiểm tra chất lượng + extract metadata
+
+#### Bước 4 — Xem kết quả
+
+Mở tab **🔍 Xem chương**:
+- Click tên chương bên trái để xem chi tiết
+- Tab **Song song**: EN trái / VN phải, cuộn đồng bộ
+- Tab **Bản dịch**: xem toàn văn + nút tải xuống
+- Tab **Diff**: highlight đoạn mới / thay đổi so với gốc
+
+---
+
+### Các tính năng Web UI
+
+| Tab | Chức năng chính |
+|---|---|
+| 📄 **Dịch** | Upload file, xem trạng thái từng chương, chạy pipeline, xem log real-time |
+| 🔍 **Xem chương** | Song song EN/VN, diff, xem raw, tải xuống, **dịch lại** |
+| 👤 **Nhân vật** | Card profile, pronoun pairs strong/weak, emotion state |
+| 📚 **Từ điển** | Xem/tìm kiếm glossary theo category, clean staging terms |
+| 📊 **Thống kê** | Tiến độ, tokens, name lock violations, biểu đồ glossary |
+| ⚙️ **Cài đặt** | 7 nhóm tham số: API, Pipeline, Scout AI, Nhân vật, Token Budget, Merge & Retry, Đường dẫn |
+
+---
+
+### Dịch lại một chương (Web UI)
+
+1. Mở tab **🔍 Xem chương**
+2. Click chương cần dịch lại
+3. Nhấn **↺ Dịch lại…** ở cuối trang
+4. Chọn tuỳ chọn:
+   - ☑ **Cập nhật data** — cập nhật Glossary / Characters / Skills sau khi dịch lại
+   - ☑ **Chạy Scout AI trước** — phân tích lại context trước khi dịch
+5. Nhấn **⚡ Xác nhận dịch lại**
+
+> ⚠️ Bản dịch cũ sẽ bị ghi đè.
+
+---
+
+## 5. Cách dùng — CLI
+
+CLI phù hợp cho chạy batch, automation, hoặc server không có giao diện đồ hoạ.
+
+### Workflow cơ bản
 
 ```bash
-# Dịch tất cả chương chưa dịch
+# 1. Đặt file chương vào inputs/
+#    (mỗi file .txt hoặc .md = một chương)
+
+# 2. Dịch tất cả chương chưa dịch
 python main.py translate
 
-# Dịch lại một chương cụ thể (chọn theo số thứ tự)
+# 3. Sau khi dịch xong — phân loại thuật ngữ mới
+python main.py clean glossary
+
+# 4. Merge nhân vật mới vào Active
+python main.py clean characters --action merge
+
+# 5. Sửa vi phạm Name Lock (nếu có)
+python main.py fix-names
+```
+
+---
+
+### Tất cả lệnh CLI
+
+#### `translate` — Dịch hàng loạt
+
+```bash
+python main.py translate
+```
+
+Dịch tất cả chương trong `inputs/` chưa có bản dịch tương ứng trong `outputs/`.  
+Pipeline tự động bỏ qua chương đã dịch, chạy Scout AI theo chu kỳ, và retry khi lỗi.
+
+---
+
+#### `retranslate` — Dịch lại một chương
+
+```bash
+# Chọn theo số thứ tự
 python main.py retranslate 42
-python main.py retranslate "chapter_100"     # tìm theo keyword
-python main.py retranslate --list            # xem danh sách
 
-# Dịch lại và cập nhật data (glossary, characters, skills)
+# Chọn theo keyword trong tên file
+python main.py retranslate "chapter_100"
+
+# Xem danh sách tất cả chương trước khi chọn
+python main.py retranslate --list
+
+# Dịch lại và cập nhật Glossary / Characters / Skills
 python main.py retranslate 42 --update-data
+```
 
-# Quản lý glossary
-python main.py clean glossary               # phân loại và merge staging terms
+---
 
-# Quản lý characters
-python main.py clean characters --action review     # xem toàn bộ profile
-python main.py clean characters --action merge      # merge staging → active
-python main.py clean characters --action fix        # tự sửa lỗi nhỏ
-python main.py clean characters --action export     # xuất báo cáo Markdown
-python main.py clean characters --action validate   # kiểm tra schema
+#### `clean glossary` — Phân loại thuật ngữ
 
-# Sửa vi phạm Name Lock
-python main.py fix-names --list             # xem vi phạm
-python main.py fix-names --dry-run          # xem trước không ghi
-python main.py fix-names                    # sửa thật
-python main.py fix-names --all-chapters     # sửa toàn bộ chương
+```bash
+python main.py clean glossary
+```
 
-# Thống kê nhanh
+Đọc `Staging_Terms.md` + section "Mới" trong các Glossary file → dùng Gemini phân loại vào 5 category → append vào đúng file, backup file cũ.
+
+---
+
+#### `clean characters` — Quản lý nhân vật
+
+```bash
+# Xem toàn bộ profile đang active
+python main.py clean characters --action review
+
+# Merge Staging_Characters.json → Characters_Active.json
+python main.py clean characters --action merge
+
+# Tự động sửa lỗi nhỏ (archetype sai, field thiếu...)
+python main.py clean characters --action fix
+
+# Xuất báo cáo Markdown vào Reports/
+python main.py clean characters --action export
+
+# Kiểm tra schema, cảnh báo profile thiếu thông tin
+python main.py clean characters --action validate
+
+# Xem nhân vật trong Archive
+python main.py clean characters --action archive
+```
+
+---
+
+#### `fix-names` — Sửa vi phạm Name Lock
+
+```bash
+# Xem danh sách vi phạm
+python main.py fix-names --list
+
+# Xem trước thay đổi (không ghi file)
+python main.py fix-names --dry-run
+
+# Sửa thật (chỉ các chương có vi phạm)
+python main.py fix-names
+
+# Sửa toàn bộ tất cả chương
+python main.py fix-names --all-chapters
+
+# Xóa toàn bộ name_fixes.json
+python main.py fix-names --clear
+```
+
+---
+
+#### `stats` — Thống kê nhanh
+
+```bash
 python main.py stats
 ```
 
----
-
-## 5. Pipeline chi tiết
-
-### Bước 1 — Input
-
-`Pipeline.sorted_inputs()` đọc tất cả file `.txt` / `.md` trong `inputs/`, sort theo natural order (chương 1, 2, ..., 10, 11 chứ không phải 1, 10, 11, 2). `_get_pending()` lọc ra những file chưa có bản dịch tương ứng trong `outputs/`.
-
-### Bước 2 — Scout AI (conditional)
-
-Chạy mỗi `SCOUT_REFRESH_EVERY` chương. Scout đọc `SCOUT_LOOKBACK` chương gần nhất và thực hiện 3 việc:
-
-**a. Context Notes** — Xóa `Context_Notes.md` cũ, sinh mới với 4 mục: mạch truyện đặc biệt, khoá xưng hô đang active, diễn biến gần nhất, cảnh báo cho AI dịch.
-
-**b. Arc Memory** — Append-only tóm tắt vào `Arc_Memory.md`. Có cơ chế chống trùng lặp: extract dữ liệu đã có → truyền vào prompt AI → post-process loại dòng trùng.
-
-**c. Emotion Tracker** — Phân tích trạng thái cảm xúc nhân vật chính (normal / angry / hurt / changed), cập nhật vào `Characters_Active.json`. Emotion được hiển thị trong prompt với cảnh báo nổi bật.
-
-### Bước 3 — Build context
-
-`filter_glossary()` dùng Aho-Corasick (nếu cài) hoặc regex để chỉ lấy thuật ngữ XUẤT HIỆN trong chương → giảm kích thước prompt. Tương tự, `filter_characters()` và `load_skills_for_chapter()` chỉ lấy nhân vật/kỹ năng liên quan.
-
-### Bước 4 — Prompt builder (8 sections)
-
-```
-PHẦN 1 — Hướng dẫn dịch (prompts/system_agent.md)
-PHẦN 2 — Từ điển thuật ngữ (glossary filter + skills đã biết)
-PHẦN 3 — Profile nhân vật (emotion warning + xưng hô ưu tiên)
-PHẦN 4 — Hướng dẫn lập profile (prompts/character_profile.md)
-PHẦN 5 — Yêu cầu đầu ra JSON (5 trường bắt buộc)
-PHẦN 6 — Bộ nhớ arc (N entry gần nhất từ Arc_Memory.md)
-PHẦN 7 — Ghi chú tức thì (Context_Notes.md từ Scout)
-PHẦN 8 — Name Lock Table (ràng buộc CỨNG nhất — đặt cuối)
-```
-
-**Token Budget** (`token_budget.py`): nếu prompt vượt `BUDGET_LIMIT × 0.8`, pipeline tự cắt theo thứ tự ưu tiên thấp → cao: arc memory entries → staging glossary → character profiles phụ → toàn bộ arc memory.
-
-### Bước 5 — Gemini API call
-
-`call_gemini()` gọi Gemini với `response_mime_type="application/json"` và `response_schema=GEMINI_SCHEMA` (Pydantic → JSON Schema đã strip `additionalProperties`). Kết quả parse thành `TranslationResult` với 5 trường: `translation`, `new_terms`, `new_characters`, `relationship_updates`, `skill_updates`.
-
-**Multi-key pool**: `ApiKeyPool` quản lý primary key + tối đa 2 fallback. Khi một key bị rate-limit `KEY_ROTATE_THRESHOLD` lần liên tiếp → rotate sang key tiếp theo. Nếu tất cả dead → `AllKeysExhaustedError`.
-
-### Bước 6 — Quality guard
-
-4 tiêu chí kiểm tra:
-
-| Tiêu chí | Ngưỡng | Mô tả |
-|----------|--------|-------|
-| Dòng quá dài | > 1000 ký tự | Dính dòng nghiêm trọng |
-| Quá ít dòng | < 10 dòng không rỗng | Nhiều đoạn bị gộp |
-| Mất dòng so với gốc | > 75% | So sánh với source |
-| Thiếu dòng trống | blank_ratio < 20% | Thiếu phân đoạn |
-
-Nếu fail → `build_retry_prompt()` tạo input có cảnh báo cụ thể → retry (tối đa `MAX_RETRIES`).
-
-### Bước 7 — Write output
-
-`atomic_write()`: ghi vào file `.tmp` → `os.replace()` → không bao giờ để file ở trạng thái không hoàn chỉnh khi bị kill giữa chừng.
-
-### Bước 8 — Update data
-
-Sau khi dịch thành công (nếu không phải `retranslate` với `skip_data_update`):
-
-- `add_new_terms()` → Staging_Terms.md hoặc thẳng vào glossary file (tùy `IMMEDIATE_MERGE`)
-- `add_skill_updates()` → Skills.json (evolution chain tracking)
-- `update_from_response()` → Staging_Characters.json hoặc Characters_Active.json
-- `validate_translation()` → ghi vi phạm Name Lock vào `data/name_fixes.json`
-
-### Bước 9 — Final merge & retry pass
-
-Sau khi xử lý tất cả chương:
-- Retry pass (`RETRY_FAILED_PASSES` vòng) cho các chương thất bại
-- `_final_merge()`: auto-merge glossary và characters nếu bật
-- In summary: số chương thành công / thất bại / key stats
+In bảng: số nhân vật Active / Archive / Staging, số thuật ngữ theo category, kỹ năng, Name Lock entries, trạng thái API keys.
 
 ---
 
-## 6. Data layer
+### Workflow nâng cao (CLI)
 
-### Glossary (`data/glossary/`)
+```bash
+# Kiểm tra chất lượng data trước khi dịch tiếp
+python main.py clean characters --action validate
+python main.py stats
+python main.py fix-names --list
 
-5 file category + 1 staging:
+# Dịch lại chương có vấn đề và cập nhật data
+python main.py retranslate 55 --update-data
 
+# Xem nhân vật đã archive (lâu không xuất hiện)
+python main.py clean characters --action archive
+
+# Xuất báo cáo nhân vật ra file Markdown
+python main.py clean characters --action export
+# → Reports/character_report_YYYYMMDD_HHMM.md
 ```
-Glossary_Pathways.md      — Hệ thống tu luyện, Sequence, cảnh giới
-Glossary_Organizations.md — Tổ chức, hội phái, bang nhóm
-Glossary_Items.md         — Vật phẩm, vũ khí, đan dược, artifact
-Glossary_Locations.md     — Địa danh, thành phố, cõi giới, dungeon
-Glossary_General.md       — Thuật ngữ chung, tên nhân vật
-Staging_Terms.md          — Buffer chờ phân loại
-```
-
-Format mỗi dòng: `- English term: Bản dịch tiếng Việt`
-
-Filter dùng **Aho-Corasick** (nếu cài `pyahocorasick`) hoặc regex. Cache automaton kèm mtime — tự invalidate khi file thay đổi.
-
-`clean glossary` command gọi Gemini để phân loại staging terms vào đúng category, backup file cũ trước khi ghi.
-
-### Characters (`data/characters/`)
-
-Schema v3.0. Cấu trúc 3 tầng:
-
-```
-Characters_Active.json    — Nhân vật xuất hiện gần đây (full profile)
-Characters_Archive.json   — Lâu không thấy (rotate sau ARCHIVE_AFTER_CHAPTERS)
-Staging_Characters.json   — Mới từ AI, chờ merge
-```
-
-Mỗi profile gồm: `identity`, `power`, `canonical_name`, `alias_canonical_map`, `speech` (pronoun_self, formality, how_refers_to_others, quirks), `habitual_behaviors` (với confidence ≥ 0.65), `relationships` (với `pronoun_status`: weak/strong), `arc_status`, `emotional_state`.
-
-**Emotion Tracker**: Scout cập nhật `emotional_state.current` (normal / angry / hurt / changed). Prompt hiển thị cảnh báo nổi bật khi state ≠ normal. Auto-reset về normal sau `EMOTION_RESET_CHAPTERS` chương không thấy.
-
-### Skills (`data/skills/Skills.json`)
-
-```json
-{
-  "skills": {
-    "Fireball": {
-      "vietnamese": "[Hỏa Cầu]",
-      "owner": "Arthur",
-      "skill_type": "active",
-      "evolved_from": "",
-      "evolution_chain": ["[Hỏa Cầu]"],
-      "first_seen": "chapter_001.txt"
-    }
-  }
-}
-```
-
-Filter: chỉ đưa vào prompt kỹ năng XUẤT HIỆN trong chương (regex scan cả EN lẫn VN name).
-
-### Name Lock (`managers/name_lock.py`)
-
-Tự động build từ:
-1. `Characters_Active` + `Archive` → `canonical_name` + `alias_canonical_map`
-2. `Glossary_Organizations` → tên tổ chức
-3. `Glossary_Locations` → địa danh
-4. `Glossary_General` → tên riêng khác
-
-Quy tắc: tên giữ nguyên EN (canonical == tên gốc) → KHÔNG đưa vào bảng. Conflict → giữ bản lock đầu tiên, log cảnh báo.
-
-`validate_translation()` quét bản dịch để phát hiện tên EN còn sót. Vi phạm được ghi vào `data/name_fixes.json` → lệnh `fix-names` sửa hàng loạt.
 
 ---
 
-## 7. Scout AI & Memory
-
-### Context Notes (ngắn hạn)
-
-Scout xóa và tạo mới `Context_Notes.md` mỗi `SCOUT_REFRESH_EVERY` chương. 4 mục:
-
-1. Mạch truyện đặc biệt (flashback, hồi ký, giấc mơ...)
-2. Khoá xưng hô đang active (từng cặp nhân vật)
-3. Diễn biến gần nhất (3–5 sự kiện quan trọng)
-4. Cảnh báo cho AI dịch
-
-### Arc Memory (dài hạn)
-
-`Arc_Memory.md` chỉ APPEND, không bao giờ xóa. Mỗi entry gồm:
-- Sự kiện lớn
-- Thay đổi thế giới
-- Danh tính active
-- Xưng hô đã chốt
-
-Cơ chế **chống trùng lặp**: extract data đã có → truyền vào prompt AI ("đã biết — KHÔNG ghi lại") → post-process loại dòng trùng (exact match + fuzzy 75%).
-
-Khi load vào prompt: chỉ lấy `ARC_MEMORY_WINDOW` entry gần nhất.
-
----
-
-## 8. Name Lock & Quality Guard
-
-### Name Lock — Ràng buộc cứng
-
-Đặt ở **PHẦN 8** (cuối cùng) của system prompt — vị trí có attention cao nhất. Format bảng ASCII rõ ràng. Prompt AI tự kiểm tra sau dịch.
-
-Pipeline cũng tự validate sau khi nhận kết quả: dùng `re.search(rf"\b{re.escape(eng)}\b")` để tìm tên EN còn sót.
-
-### Quality Guard — 4 tiêu chí
-
-Vấn đề thường gặp khi Gemini trả về: gộp nhiều đoạn văn vào một dòng ("dính dòng"). Quality guard phát hiện và yêu cầu retry với cảnh báo cụ thể trong input.
-
----
-
-## 9. Cấu trúc thư mục
+## 6. Cấu trúc thư mục
 
 ```
 littrans/
-├── main.py                          # Entry point
-├── .env                             # Cấu hình (từ .env.example)
+├── main.py                          # Entry point CLI
+├── run_ui.py                        # Entry point Web UI  ← MỚI
+├── .env                             # Cấu hình (tạo từ .env.example)
+├── .env.example                     # Template cấu hình
 ├── pyproject.toml
 ├── requirements.txt
 │
 ├── src/littrans/
 │   ├── cli.py                       # Typer CLI — tất cả commands
-│   ├── config/settings.py           # Singleton Settings (dataclass + dotenv)
+│   ├── config/
+│   │   └── settings.py              # Singleton Settings (dataclass + dotenv)
 │   │
 │   ├── engine/
 │   │   ├── pipeline.py              # Orchestrator chính
 │   │   ├── scout.py                 # Scout AI (context notes, arc, emotion)
 │   │   ├── prompt_builder.py        # Xây system prompt 8 sections
-│   │   └── quality_guard.py         # Kiểm tra chất lượng bản dịch
+│   │   ├── pre_processor.py         # Pre-call: chapter map
+│   │   ├── post_analyzer.py         # Post-call: quality review + metadata
+│   │   └── quality_guard.py         # Kiểm tra cơ học bản dịch
 │   │
 │   ├── managers/
 │   │   ├── glossary.py              # Glossary filter + Aho-Corasick + write
@@ -369,79 +369,254 @@ littrans/
 │   │   ├── clean_characters.py      # review/merge/fix/export/validate
 │   │   └── fix_names.py             # Sửa vi phạm Name Lock hàng loạt
 │   │
+│   ├── ui/                          # ← MỚI — Web UI package
+│   │   ├── __init__.py
+│   │   ├── app.py                   # Streamlit app — 6 trang
+│   │   └── runner.py                # Background thread + stdout capture
+│   │
 │   └── utils/
 │       ├── io_utils.py              # load_text, load_json, atomic_write
 │       ├── data_versioning.py       # backup + restore + prune
+│       ├── text_normalizer.py       # Chuẩn hoá raw EN text
 │       └── logger.py                # get_logger, log_error, log_warning
 │
 ├── prompts/
 │   ├── system_agent.md              # Hướng dẫn dịch chính (XML structured)
 │   └── character_profile.md         # Hướng dẫn lập profile nhân vật
 │
-├── inputs/                          # File gốc tiếng Anh (*.txt / *.md)
-├── outputs/                         # Bản dịch (*_VN.txt)
+├── inputs/                          # ← Đặt file chương gốc (.txt / .md) vào đây
+├── outputs/                         # Bản dịch (*_VN.txt) — tự sinh
 ├── data/
-│   ├── glossary/                    # 5 Glossary_*.md + Staging_Terms.md
-│   ├── characters/                  # Characters_Active/Archive/Staging.json
-│   ├── skills/Skills.json
-│   ├── memory/                      # Arc_Memory.md + Context_Notes.md
+│   ├── glossary/
+│   │   ├── Glossary_Pathways.md
+│   │   ├── Glossary_Organizations.md
+│   │   ├── Glossary_Items.md
+│   │   ├── Glossary_Locations.md
+│   │   ├── Glossary_General.md
+│   │   └── Staging_Terms.md         # Buffer chờ phân loại
+│   ├── characters/
+│   │   ├── Characters_Active.json
+│   │   ├── Characters_Archive.json
+│   │   └── Staging_Characters.json
+│   ├── skills/
+│   │   └── Skills.json
+│   ├── memory/
+│   │   ├── Arc_Memory.md
+│   │   └── Context_Notes.md
 │   └── name_fixes.json              # Vi phạm Name Lock chờ sửa
-├── logs/pipeline.log
-└── Reports/                         # Báo cáo xuất từ clean characters --export
+├── logs/
+│   └── pipeline.log
+└── Reports/                         # Báo cáo từ clean characters --export
 ```
 
 ---
 
-## 10. Đánh giá & điểm mạnh / hạn chế
+## 7. Pipeline chi tiết
+
+### Luồng xử lý mỗi chương (3-call mode)
+
+```
+Input file
+  ↓
+[Scout AI — mỗi N chương]
+  → Xoá Context_Notes.md cũ, sinh mới (4 mục)
+  → Append Arc_Memory.md (chống trùng lặp)
+  → Cập nhật emotional_state nhân vật
+  ↓
+Build context
+  → filter_glossary()    — Aho-Corasick, chỉ lấy term xuất hiện trong chương
+  → filter_characters()  — chỉ lấy nhân vật liên quan
+  → load_skills_for_chapter()
+  → build_name_lock_table()
+  ↓
+Pre-call (Gemini)
+  → Xác định tên / skill / pronoun pair đang active
+  → Phát hiện alias, scene bất thường
+  → Output: ChapterMap
+  ↓
+Trans-call (Gemini)
+  → System prompt 8 sections + ChapterMap
+  → Output: plain text bản dịch
+  ↓
+Quality Guard (mechanical)
+  → 7 tiêu chí: dính dòng, thiếu dòng trống, mất đoạn, dòng chưa dịch, system box...
+  → Retry nếu fail (tối đa MAX_RETRIES)
+  ↓
+Post-call (Gemini)
+  → Review chất lượng dịch thuật (name leak, pronoun sai, đoạn mất)
+  → Auto-fix lỗi trình bày (plain-text call riêng)
+  → Extract metadata: new_terms, new_characters, relationship_updates, skill_updates
+  → Retry Trans-call nếu có lỗi retry_required
+  ↓
+Name Lock validate
+  → Quét bản dịch, ghi vi phạm vào data/name_fixes.json
+  ↓
+atomic_write() → outputs/*_VN.txt
+  ↓
+Update data
+  → add_new_terms()         → Glossary (immediate hoặc Staging)
+  → add_skill_updates()     → Skills.json
+  → update_from_response()  → Characters (immediate hoặc Staging)
+```
+
+### Token Budget — Thứ tự cắt khi vượt ngưỡng
+
+| Ưu tiên | Thành phần | Hành động |
+|---|---|---|
+| Không bao giờ cắt | Name Lock + Instructions | — |
+| 1 | Arc Memory | Giảm xuống 1 entry gần nhất |
+| 2 | Staging glossary | Bỏ hoàn toàn |
+| 3 | Character profiles phụ | Giữ top 5 liên quan nhất |
+| 4 (last resort) | Toàn bộ Arc Memory | Bỏ hoàn toàn |
+
+---
+
+## 8. Data layer
+
+### Glossary
+
+5 file category + 1 staging. Format mỗi dòng: `- English term: Bản dịch tiếng Việt`
+
+| File | Nội dung |
+|---|---|
+| `Glossary_Pathways.md` | Hệ thống tu luyện, Sequence, cảnh giới |
+| `Glossary_Organizations.md` | Tổ chức, hội phái, bang nhóm |
+| `Glossary_Items.md` | Vật phẩm, vũ khí, đan dược, artifact |
+| `Glossary_Locations.md` | Địa danh, thành phố, cõi giới, dungeon |
+| `Glossary_General.md` | Thuật ngữ chung, tên nhân vật |
+| `Staging_Terms.md` | Buffer chờ phân loại (tự động thêm vào đây) |
+
+### Characters
+
+3 tầng JSON:
+
+- **Active** — nhân vật xuất hiện gần đây, full profile
+- **Archive** — tự động rotate sau `ARCHIVE_AFTER_CHAPTERS` chương không thấy
+- **Staging** — mới extract từ AI, chờ merge
+
+Mỗi profile gồm: `identity`, `power`, `speech` (pronoun_self, formality, how_refers_to_others, quirks), `habitual_behaviors` (confidence ≥ 0.65), `relationships` (pronoun_status: weak/strong), `arc_status`, `emotional_state`.
+
+### Skills
+
+`Skills.json` lưu kỹ năng với evolution chain:
+
+```json
+{
+  "skills": {
+    "Fireball": {
+      "vietnamese": "[Hỏa Cầu]",
+      "owner": "Arthur",
+      "evolved_from": "",
+      "evolution_chain": ["[Hỏa Cầu]"],
+      "first_seen": "chapter_001.txt"
+    }
+  }
+}
+```
+
+### Name Lock
+
+Tự build từ `canonical_name` + `alias_canonical_map` trong Characters, và `Glossary_Organizations/Locations/General`. Đặt ở **Phần 8** (cuối) system prompt để có attention cao nhất.
+
+---
+
+## 9. Scout AI & Memory
+
+### Context Notes (ngắn hạn)
+
+Xoá và tạo mới `Context_Notes.md` mỗi `SCOUT_REFRESH_EVERY` chương. Gồm 4 mục:
+
+1. Mạch truyện đặc biệt (flashback, hồi ký, giấc mơ)
+2. Khoá xưng hô đang active (từng cặp nhân vật)
+3. Diễn biến gần nhất (3–5 sự kiện)
+4. Cảnh báo cho AI dịch
+
+### Arc Memory (dài hạn)
+
+`Arc_Memory.md` chỉ **APPEND**, không bao giờ xoá. Chống trùng lặp bằng cách extract data đã có → truyền vào prompt AI ("đã biết — KHÔNG ghi lại") → post-process loại dòng trùng (exact + fuzzy 75%).
+
+### Emotion Tracker
+
+Scout phân tích cảm xúc nhân vật cuối mỗi window: `normal` / `angry` / `hurt` / `changed`. Prompt hiển thị cảnh báo nổi bật khi state ≠ normal. Auto-reset về normal sau `EMOTION_RESET_CHAPTERS` chương.
+
+---
+
+## 10. Name Lock & Quality Guard
+
+### Name Lock
+
+Quy tắc cứng — không ngoại lệ:
+- Tên có trong bảng → **bắt buộc** dùng bản chuẩn, không dùng tên gốc EN
+- Tên không có trong bảng → giữ nguyên EN, ghi vào `new_terms`
+- Conflict → giữ bản lock đầu tiên, log cảnh báo
+
+Sau khi dịch, pipeline tự validate và ghi vi phạm vào `data/name_fixes.json`. Dùng `fix-names` để sửa hàng loạt.
+
+### Quality Guard — 7 tiêu chí
+
+| # | Tiêu chí | Ngưỡng |
+|---|---|---|
+| 1 | Dòng quá dài (dính dòng nghiêm trọng) | > 1000 ký tự |
+| 2 | Quá ít dòng | < 10 dòng không rỗng |
+| 3 | Mất dòng so với bản gốc | > 50% |
+| 4 | Thiếu dòng trống | blank ratio < 20% |
+| 5 | Bản dịch quá ngắn | < 45% độ dài bản gốc |
+| 6 | Còn dòng tiếng Anh chưa dịch | > 15% dòng |
+| 7 | System box có dòng trống thừa bên trong | ≥ 3 chỗ |
+
+---
+
+## 11. Điểm mạnh & hạn chế
 
 ### Điểm mạnh
 
-**Nhất quán tên & xưng hô** — Name Lock table + relationship `pronoun_status` (weak/strong) + priority chain (4 tầng) đảm bảo xưng hô không dao động. Vi phạm được log và sửa hàng loạt bằng `fix-names`.
+**Nhất quán xuyên suốt** — Name Lock + relationship `pronoun_status` (weak/strong) + priority chain 4 tầng đảm bảo xưng hô không dao động qua hàng trăm chương.
 
-**Context thông minh** — Filter glossary/character/skills chỉ lấy nội dung liên quan đến chương hiện tại. Token Budget tự cắt context khi vượt ngưỡng theo thứ tự ưu tiên đã định sẵn.
+**Context thông minh** — Filter glossary/character/skills chỉ lấy nội dung liên quan. Token Budget tự cắt theo thứ tự ưu tiên khi vượt ngưỡng.
 
-**Bộ nhớ dài hạn** — Arc Memory append-only với chống trùng lặp. Context Notes ngắn hạn cung cấp thông tin tức thì (xưng hô đang active, cảnh báo mạch truyện).
+**Bộ nhớ dài hạn** — Arc Memory append-only chống trùng lặp. Context Notes ngắn hạn cung cấp thông tin tức thì.
 
 **Độ bền** — Atomic write, multi-key pool với auto-rotate, retry với exponential backoff, retry pass cuối pipeline.
 
-**Emotion Tracker** — Scout phân tích cảm xúc nhân vật sau mỗi batch chương. Prompt hiển thị cảnh báo khi nhân vật ở trạng thái đặc biệt (angry/hurt/changed).
-
-**Tooling đầy đủ** — `clean glossary` (AI categorization), `clean characters` (review/merge/fix/export/validate), `fix-names` (batch fix Name Lock), `stats`.
+**Hai giao diện** — CLI cho automation/server, Web UI với live log và split view cho người dùng thông thường.
 
 ### Hạn chế hiện tại
 
-**Chỉ hỗ trợ Gemini** — Toàn bộ client layer (`client.py`) gắn cứng với `google-genai`. Không có abstraction cho OpenAI / Claude / local models.
+**Chỉ hỗ trợ Gemini** — `client.py` gắn cứng với `google-genai`. Không có abstraction cho OpenAI / Claude / local models.
 
-**Không có chunking** — Chương rất dài (> 100K ký tự) không được chia nhỏ trước khi gửi. Có thể vượt context window của model.
+**Không chunking** — Chương rất dài (> 100K ký tự) không được chia nhỏ trước khi gửi. Có thể vượt context window.
 
-**Scout chạy tuần tự** — Scout phải chờ trước khi dịch chương tiếp theo. Không có pipeline parallel giữa Scout và dịch.
+**File-based, single-user** — Data dùng chung 1 bộ `inputs/outputs/data/`. Không phù hợp multi-user đồng thời mà không có project isolation.
 
-**Glossary filter có thể bỏ sót** — Aho-Corasick match word boundary bằng `isalnum()` check — có thể bỏ sót các thuật ngữ kết hợp với dấu câu đặc biệt.
-
-**Characters tiếng Trung** — Quy tắc Pinyin → Hán Việt trong `system_agent.md` nhưng không có bảng tra cứu tự động. AI phải tự chuyển đổi, có thể không nhất quán.
+**Scout tuần tự** — Scout phải chờ trước khi dịch chương tiếp theo. Không có pipeline parallel.
 
 ---
 
-## Lệnh thường dùng
+## Lệnh tham khảo nhanh
 
 ```bash
-# Workflow cơ bản
-python main.py translate
+# ── Khởi động Web UI ──────────────────────────────────────
+python run_ui.py
+python run_ui.py --port 8502
 
-# Sau khi dịch xong
+# ── Workflow CLI cơ bản ───────────────────────────────────
+python main.py translate
 python main.py clean glossary
 python main.py clean characters --action merge
 python main.py fix-names
-
-# Kiểm tra chất lượng data
-python main.py clean characters --action validate
 python main.py stats
-python main.py fix-names --list
 
-# Dịch lại một chương có vấn đề
+# ── Xử lý sự cố ──────────────────────────────────────────
 python main.py retranslate 55 --update-data
+python main.py fix-names --dry-run
+python main.py fix-names --list
+python main.py clean characters --action validate
+
+# ── Xuất báo cáo ─────────────────────────────────────────
+python main.py clean characters --action export
+# → Reports/character_report_YYYYMMDD_HHMM.md
 ```
 
 ---
 
-*LiTTrans v4.1 — Powered by Google Gemini*
+*LiTTrans v4.2 — Powered by Google Gemini*
