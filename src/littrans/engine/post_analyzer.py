@@ -5,8 +5,8 @@ Chạy SAU Translation call. Làm 2 việc:
   1. Đánh giá chất lượng bản dịch:
        - Lỗi trình bày/cấu trúc → tự sửa (auto_fix)
        - Lỗi dịch thuật (tên, kỹ năng, pronoun) → yêu cầu retry Trans-call
-  2. Extract metadata:
-       new_terms, new_characters, relationship_updates, skill_updates
+  2. Extract metadata đầy đủ:
+       new_terms, new_characters (full profile), relationship_updates, skill_updates
 
 Severity:
   auto_fix       → Post-call tự sửa trong auto_fixed_translation
@@ -69,68 +69,163 @@ Bạn nhận được:
   2. Bản dịch tiếng Việt
   3. Chapter Map (tên/skill/pronoun đã lock cho chapter này)
 
-Nhiệm vụ 1 — ĐÁNH GIÁ CHẤT LƯỢNG:
+═══════════════════════════════════════════════════════════
+NHIỆM VỤ 1 — ĐÁNH GIÁ CHẤT LƯỢNG
+═══════════════════════════════════════════════════════════
 Phân loại lỗi theo severity:
 
-auto_fix (tự sửa được):
+auto_fix (tự sửa trong auto_fixed_translation):
   - Thiếu dòng trống giữa các đoạn văn thường
   - Thoại bị dính dòng (2 người nói cùng dòng)
   - System box / bảng hệ thống có dòng trống thừa GIỮA các dòng trong box
-    (Lưu ý: system box phải liền nhau, không có dòng trống ở giữa)
+    (Quy tắc: nội dung system box phải liền nhau, KHÔNG có dòng trống ở giữa)
   - Thừa/thiếu dấu cách, markdown lỗi lẻ tẻ
 
 retry_required (Trans-call phải chạy lại):
   - Tên nhân vật / địa danh sai hoặc lọt qua Name Lock
   - Tên kỹ năng sai so với danh sách đã lock
-  - Pronoun sai (dùng sai cặp xưng hô)
+  - Pronoun sai (dùng sai cặp xưng hô đã chốt)
   - Đoạn văn bị mất hoặc ý nghĩa lệch nghiêm trọng
   - Câu bị cắt cụt, thiếu nội dung
 
-Nhiệm vụ 2 — EXTRACT METADATA:
-Đọc bản gốc + bản dịch, extract:
-  - new_terms: tên/thuật ngữ mới lần đầu xuất hiện (kể cả giữ nguyên EN)
-  - new_characters: nhân vật có tên xuất hiện lần đầu (tên + vai trò + mô tả ngắn)
-  - relationship_updates: thay đổi quan hệ thực sự quan trọng giữa 2 nhân vật
-  - skill_updates: kỹ năng MỚI hoặc TIẾN HÓA lần đầu
+═══════════════════════════════════════════════════════════
+NHIỆM VỤ 2 — EXTRACT METADATA ĐẦY ĐỦ
+═══════════════════════════════════════════════════════════
+Đọc bản gốc + bản dịch, extract chính xác.
+
+── new_characters ──────────────────────────────────────────
+Nhân vật có tên xuất hiện LẦN ĐẦU → điền FULL profile.
+
+Quy tắc tên:
+  - "name" = tên gốc tiếng Anh (dùng làm key trong database)
+  - "canonical_name" = tên VN chuẩn sẽ dùng xuyên suốt truyện
+  - Tên Hán (Zhang Wei, Xiao Yan) → dịch Hán Việt làm canonical_name
+  - Tên phương Tây (Arthur, Klein) → canonical_name = giữ nguyên EN
+
+Quy tắc archetype (chọn đúng 1):
+  MC_GREMLIN    → cợt nhả, ảo thật, tự xưng Tao/Tôi
+  SYSTEM_AI     → vô cảm, châm biếm ngầm, Hệ thống/Ký chủ
+  EDGELORD      → tỏ vẻ nguy hiểm, ngầu lòi, Ta/bọn kiến rệp
+  ARROGANT_NOBLE → khinh khỉnh, thượng đẳng, Bản thiếu gia/Ngươi
+  BRO_COMPANION → sảng khoái, nhiệt huyết, Tớ/Cậu
+  ANCIENT_MAGE  → cổ trang, uyên bác, Lão phu/Tiểu tử
+  UNKNOWN       → chưa xác định
+
+Quy tắc personality_traits:
+  - 4-6 câu, MỖI câu phải đủ ngữ cảnh để dùng ngay khi dịch
+  - KHÔNG dùng keyword ngắn một mình ("lạnh lùng", "mạnh mẽ")
+  - ĐÚNG: "Bề ngoài lạnh lùng với người lạ nhưng quan sát — tin rồi thì trung thành tuyệt đối"
+  - SAI: "Lạnh lùng, mạnh mẽ, bí ẩn"
+
+Quy tắc pronoun_self:
+  Tao / Ta / Tôi / Tớ / Mình / Bổn tọa / Lão phu / Hệ thống...
+
+Quy tắc how_refers_to_others:
+  - target: tên nhân vật CỤ THỂ hoặc "default_ally" / "default_enemy" / "default_elder"
+  - style: đại từ + ngữ cảnh. VD: "Mày (thân thiết)", "Ngươi (khinh thường)"
+
+Quy tắc relationships.dynamic:
+  - Cặp đại từ 2 chiều: VD "Tao/Mày", "Ta/Ngươi", "Anh/Em"
+  - Đây là nguồn ƯU TIÊN CAO NHẤT khi dịch hội thoại
+  - pronoun_status: "weak" nếu chưa chắc, "strong" nếu đã xác nhận rõ ràng
+
+═══════════════════════════════════════════════════════════
 
 QUAN TRỌNG khi viết auto_fixed_translation:
   - Chỉ sửa đúng những gì bị đánh dấu auto_fix
   - Giữ nguyên toàn bộ nội dung còn lại
-  - Nếu không có lỗi auto_fix, để auto_fixed_translation = ""
+  - Nếu không có lỗi auto_fix → để auto_fixed_translation = ""
 
 Trả về JSON. KHÔNG thêm bất cứ thứ gì ngoài JSON:
 {
   "quality": {
-    "passed": true/false,
-    "auto_fixed_translation": "bản dịch đã sửa hoặc chuỗi rỗng",
+    "passed": true,
+    "auto_fixed_translation": "",
     "issues": [
       {
         "type": "format|structure|name_leak|pronoun|style|missing",
         "severity": "auto_fix|retry_required",
-        "location": "trích đoạn ngắn (dưới 50 ký tự)",
+        "location": "trích đoạn ngắn dưới 50 ký tự",
         "detail": "mô tả lỗi cụ thể"
       }
     ],
-    "retry_instruction": "hướng dẫn cụ thể nếu cần retry, chuỗi rỗng nếu passed"
+    "retry_instruction": ""
   },
   "metadata": {
     "new_terms": [
-      {"english": "...", "vietnamese": "...", "category": "general|items|locations|..."}
+      {
+        "english": "tên/thuật ngữ EN",
+        "vietnamese": "bản dịch VN",
+        "category": "general|items|locations|organizations|pathways"
+      }
     ],
     "new_characters": [
-      {"name": "tên VN", "original": "tên EN", "role": "vai trò", "description": "mô tả"}
+      {
+        "name": "tên gốc EN — dùng làm key",
+        "canonical_name": "tên VN chuẩn",
+        "alias_canonical_map": { "alias_EN": "alias_VN" },
+        "full_name": "tên đầy đủ nếu có, chuỗi rỗng nếu không",
+        "aliases": [],
+        "active_identity": "danh tính đang dùng nếu khác tên chính, chuỗi rỗng nếu không",
+        "identity_context": "ngữ cảnh danh tính, chuỗi rỗng nếu không",
+        "current_title": "danh hiệu hiện tại, chuỗi rỗng nếu không",
+        "faction": "phe/môn phái, chuỗi rỗng nếu không",
+        "cultivation_path": "hệ thống tu luyện, chuỗi rỗng nếu không",
+        "current_level": "cấp độ hiện tại, chuỗi rỗng nếu không",
+        "signature_skills": [],
+        "combat_style": "phong cách chiến đấu, chuỗi rỗng nếu không",
+        "role": "MC|Party Member|Enemy|NPC|Mentor|Rival|Love Interest|Antagonist|Unknown",
+        "archetype": "MC_GREMLIN|SYSTEM_AI|EDGELORD|ARROGANT_NOBLE|BRO_COMPANION|ANCIENT_MAGE|UNKNOWN",
+        "personality_traits": [
+          "trait 1 — câu đủ ngữ cảnh, không phải keyword ngắn",
+          "trait 2 — câu đủ ngữ cảnh"
+        ],
+        "pronoun_self": "Tao|Ta|Tôi|...",
+        "formality_level": "low|medium-low|medium|medium-high|high",
+        "formality_note": "ghi chú formality, chuỗi rỗng nếu không",
+        "how_refers_to_others": [
+          { "target": "tên cụ thể hoặc default_ally/default_enemy", "style": "đại từ + ngữ cảnh" }
+        ],
+        "speech_quirks": [],
+        "relationships": [
+          {
+            "with_character": "tên nhân vật kia",
+            "rel_type": "ally|enemy|neutral|romantic|family|mentor|rival",
+            "feeling": "cảm xúc hiện tại",
+            "dynamic": "cặp xưng hô 2 chiều VD: Tao/Mày",
+            "pronoun_status": "weak|strong",
+            "current_status": "mô tả trạng thái quan hệ hiện tại",
+            "tension_points": [],
+            "history": []
+          }
+        ],
+        "relationship_to_mc": "mô tả quan hệ với MC, chuỗi rỗng nếu không liên quan",
+        "current_goal": "mục tiêu hiện tại, chuỗi rỗng nếu chưa rõ",
+        "hidden_goal": "mục tiêu ẩn nếu có dấu hiệu, chuỗi rỗng nếu không",
+        "current_conflict": "xung đột nội tâm hiện tại, chuỗi rỗng nếu không"
+      }
     ],
     "relationship_updates": [
       {
-        "character_a": "...", "character_b": "...",
-        "event": "mô tả sự kiện", "new_dynamic": "cặp xưng hô mới nếu có"
+        "character_a": "tên nhân vật A",
+        "character_b": "tên nhân vật B",
+        "event": "mô tả sự kiện thay đổi quan hệ",
+        "new_type": "loại quan hệ mới nếu thay đổi, chuỗi rỗng nếu không",
+        "new_feeling": "cảm xúc mới nếu thay đổi, chuỗi rỗng nếu không",
+        "new_status": "trạng thái mới",
+        "new_dynamic": "cặp xưng hô mới nếu thay đổi, chuỗi rỗng nếu không",
+        "new_tension": "điểm căng thẳng mới nếu có, chuỗi rỗng nếu không",
+        "promote_to_strong": false
       }
     ],
     "skill_updates": [
       {
-        "english": "...", "vietnamese": "[...]",
-        "owner": "...", "skill_type": "active|passive|ultimate|evolution",
-        "evolved_from": ""
+        "english": "tên kỹ năng EN",
+        "vietnamese": "[Tên Kỹ Năng VN]",
+        "owner": "tên nhân vật sở hữu",
+        "skill_type": "active|passive|ultimate|evolution|system",
+        "evolved_from": "tên kỹ năng gốc nếu là tiến hóa, chuỗi rỗng nếu không",
+        "description": "mô tả ngắn kỹ năng"
       }
     ]
   }
@@ -182,17 +277,14 @@ def _build_user_message(
 ) -> str:
     parts = []
 
-    # Chapter Map (tóm tắt để tiết kiệm tokens)
     if chapter_map and not chapter_map.is_empty():
         parts.append(f"## CHAPTER MAP\n{chapter_map.to_prompt_block()}")
 
-    # Giới hạn source + translation để tránh tốn quá nhiều TPM
-    # Post-call cần đọc đủ để review, không cần đến từng chữ
     MAX_CHARS = 15_000
     src_preview = source_text[:MAX_CHARS]
     if len(source_text) > MAX_CHARS:
         src_preview += "\n[... bị cắt bớt ...]"
-    tl_preview  = translation[:MAX_CHARS]
+    tl_preview = translation[:MAX_CHARS]
     if len(translation) > MAX_CHARS:
         tl_preview += "\n[... bị cắt bớt ...]"
 
@@ -203,11 +295,9 @@ def _build_user_message(
 
 
 def _parse(data: dict, original_translation: str, filename: str) -> PostResult:
-    """Parse JSON từ AI → PostResult, tolerant với field thiếu."""
     quality  = data.get("quality", {})
     metadata = data.get("metadata", {})
 
-    # Parse issues
     issues = []
     for raw in quality.get("issues", []):
         if not isinstance(raw, dict):
@@ -223,18 +313,15 @@ def _parse(data: dict, original_translation: str, filename: str) -> PostResult:
     auto_tx = quality.get("auto_fixed_translation", "").strip()
     retry   = quality.get("retry_instruction", "").strip()
 
-    # Xác định final_translation
     has_auto_fix_issues = any(i.severity == "auto_fix" for i in issues)
     if has_auto_fix_issues and auto_tx:
         final_translation = auto_tx
         auto_fixed        = True
-        if issues:
-            _log_fixes(issues, filename)
+        _log_fixes(issues, filename)
     else:
         final_translation = original_translation
         auto_fixed        = False
 
-    # Log retry issues
     retry_issues = [i for i in issues if i.severity == "retry_required"]
     if retry_issues:
         for issue in retry_issues:

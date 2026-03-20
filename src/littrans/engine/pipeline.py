@@ -431,57 +431,152 @@ class Pipeline:
 
     def _update_data_from_post(self, post_result, filename, chapter_index, char_profiles):
         """Update Master State từ metadata của Post-call."""
-        from littrans.llm.schemas import TermDetail, CharacterDetail, RelationshipUpdate, SkillUpdate
+        from littrans.llm.schemas import (
+            TermDetail, CharacterDetail, RelationshipUpdate, RelationshipDetail,
+            SkillUpdate, PronounEntry, HabitualBehavior,
+        )
 
-        # new_terms — convert dict → TermDetail-compatible
+        # ── new_terms ─────────────────────────────────────────────
         if post_result.new_terms:
             term_objects = []
             for t in post_result.new_terms:
-                if isinstance(t, dict) and t.get("english"):
-                    try:
-                        term_objects.append(TermDetail(
-                            english    = t.get("english", ""),
-                            vietnamese = t.get("vietnamese", ""),
-                            category   = t.get("category", "general"),
-                        ))
-                    except Exception:
-                        pass
+                if not isinstance(t, dict) or not t.get("english"):
+                    continue
+                try:
+                    term_objects.append(TermDetail(
+                        english    = t["english"],
+                        vietnamese = t.get("vietnamese", ""),
+                        category   = t.get("category", "general"),
+                    ))
+                except Exception as e:
+                    logging.warning(f"[Pipeline] TermDetail parse lỗi: {e}")
             if term_objects:
                 n = add_new_terms(term_objects, filename)
                 if n: print(f"  📝 Thuật ngữ mới: {n}")
 
-        # skill_updates — convert dict → SkillUpdate-compatible
+        # ── skill_updates ─────────────────────────────────────────
         if post_result.skill_updates:
             skill_objects = []
             for s in post_result.skill_updates:
-                if isinstance(s, dict) and s.get("english"):
-                    try:
-                        skill_objects.append(SkillUpdate(
-                            english      = s.get("english", ""),
-                            vietnamese   = s.get("vietnamese", ""),
-                            owner        = s.get("owner", ""),
-                            skill_type   = s.get("skill_type", "active"),
-                            evolved_from = s.get("evolved_from", ""),
-                        ))
-                    except Exception:
-                        pass
+                if not isinstance(s, dict) or not s.get("english"):
+                    continue
+                try:
+                    skill_objects.append(SkillUpdate(
+                        english      = s["english"],
+                        vietnamese   = s.get("vietnamese", ""),
+                        owner        = s.get("owner", ""),
+                        skill_type   = s.get("skill_type", "active"),
+                        evolved_from = s.get("evolved_from", ""),
+                        description  = s.get("description", ""),
+                    ))
+                except Exception as e:
+                    logging.warning(f"[Pipeline] SkillUpdate parse lỗi: {e}")
             if skill_objects:
                 n = add_skill_updates(skill_objects, filename)
                 if n: print(f"  ⚔️  Kỹ năng mới: {n}")
 
-        # new_characters + relationship_updates — xử lý đơn giản
-        # Post-call trả về dict thô, cần convert sang schema objects
-        # Giữ nhẹ: chỉ log, việc profile đầy đủ để clean characters xử lý
+        # ── new_characters → CharacterDetail đầy đủ ──────────────
+        char_objects = []
         if post_result.new_characters:
-            print(f"  👤 Nhân vật mới phát hiện: {len(post_result.new_characters)} "
-                  f"→ chạy 'clean characters --action merge' để xử lý")
-            # Log để người dùng biết
             for c in post_result.new_characters:
-                name = c.get("name") or c.get("original", "?")
-                logging.info(f"[PostAnalyzer] Nhân vật mới: {name} | {filename}")
+                if not isinstance(c, dict) or not c.get("name"):
+                    continue
+                try:
+                    # how_refers_to_others
+                    how_list = []
+                    for h in c.get("how_refers_to_others", []):
+                        if isinstance(h, dict) and h.get("target"):
+                            how_list.append(PronounEntry(
+                                target = h["target"],
+                                style  = h.get("style", ""),
+                            ))
 
+                    # relationships
+                    rel_list = []
+                    for r in c.get("relationships", []):
+                        if not isinstance(r, dict) or not r.get("with_character"):
+                            continue
+                        rel_list.append(RelationshipDetail(
+                            with_character = r["with_character"],
+                            rel_type       = r.get("rel_type", "neutral"),
+                            feeling        = r.get("feeling", ""),
+                            dynamic        = r.get("dynamic", ""),
+                            pronoun_status = r.get("pronoun_status", "weak"),
+                            current_status = r.get("current_status", ""),
+                            tension_points = r.get("tension_points", []),
+                            history        = [],
+                        ))
+
+                    char_obj = CharacterDetail(
+                        name                 = c["name"],
+                        full_name            = c.get("full_name", ""),
+                        canonical_name       = c.get("canonical_name", "").strip(),
+                        alias_canonical_map  = {
+                            k.strip(): v.strip()
+                            for k, v in c.get("alias_canonical_map", {}).items()
+                            if k.strip() and v.strip()
+                        },
+                        aliases              = c.get("aliases", []),
+                        active_identity      = c.get("active_identity", ""),
+                        identity_context     = c.get("identity_context", ""),
+                        current_title        = c.get("current_title", ""),
+                        faction              = c.get("faction", ""),
+                        cultivation_path     = c.get("cultivation_path", ""),
+                        current_level        = c.get("current_level", ""),
+                        signature_skills     = c.get("signature_skills", []),
+                        combat_style         = c.get("combat_style", ""),
+                        role                 = c.get("role", "Unknown"),
+                        archetype            = c.get("archetype", "UNKNOWN"),
+                        personality_traits   = c.get("personality_traits", []),
+                        pronoun_self         = c.get("pronoun_self", ""),
+                        formality_level      = c.get("formality_level", "medium"),
+                        formality_note       = c.get("formality_note", ""),
+                        how_refers_to_others = how_list,
+                        speech_quirks        = c.get("speech_quirks", []),
+                        habitual_behaviors   = [],  # Post-call không extract hành vi
+                        relationships        = rel_list,
+                        relationship_to_mc   = c.get("relationship_to_mc", ""),
+                        current_goal         = c.get("current_goal", ""),
+                        hidden_goal          = c.get("hidden_goal", ""),
+                        current_conflict     = c.get("current_conflict", ""),
+                    )
+                    char_objects.append(char_obj)
+                except Exception as e:
+                    name = c.get("name", "?")
+                    logging.warning(f"[Pipeline] CharacterDetail parse lỗi [{name}]: {e}")
+
+        # ── relationship_updates → RelationshipUpdate ─────────────
+        rel_objects = []
         if post_result.relationship_updates:
-            print(f"  🔗 Quan hệ cập nhật: {len(post_result.relationship_updates)}")
+            for r in post_result.relationship_updates:
+                if not isinstance(r, dict) or not r.get("character_a") or not r.get("character_b"):
+                    continue
+                try:
+                    rel_objects.append(RelationshipUpdate(
+                        character_a       = r["character_a"],
+                        character_b       = r["character_b"],
+                        chapter           = filename,
+                        event             = r.get("event", ""),
+                        new_type          = r.get("new_type", ""),
+                        new_feeling       = r.get("new_feeling", ""),
+                        new_status        = r.get("new_status", ""),
+                        new_dynamic       = r.get("new_dynamic", ""),
+                        new_tension       = r.get("new_tension", ""),
+                        promote_to_strong = bool(r.get("promote_to_strong", False)),
+                    ))
+                except Exception as e:
+                    logging.warning(f"[Pipeline] RelationshipUpdate parse lỗi: {e}")
+
+        # ── Gọi update_from_response nếu có dữ liệu ──────────────
+        if char_objects or rel_objects:
+            n_chars, n_rels = update_from_response(
+                char_objects, rel_objects, filename, chapter_index,
+            )
+            if n_chars:
+                dest = "Active" if settings.immediate_merge else "Staging"
+                print(f"  👤 Nhân vật mới: {n_chars} → {dest}")
+            if n_rels:
+                print(f"  🔗 Quan hệ cập nhật: {n_rels}")
 
     # ── Helpers ───────────────────────────────────────────────────
 
