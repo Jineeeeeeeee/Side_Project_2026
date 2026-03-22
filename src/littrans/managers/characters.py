@@ -493,23 +493,24 @@ def _apply_rel(rels: dict, target: str, upd: RelationshipUpdate, event: dict, is
         elif upd.promote_to_strong:
             r["pronoun_status"] = "strong"
 
-        # ── EPS update ────────────────────────────────────────────
-        if upd.new_intimacy_level and 1 <= upd.new_intimacy_level <= 5:
-            old = r.get("intimacy_level", 2)
-            r["intimacy_level"] = upd.new_intimacy_level
-            if old != upd.new_intimacy_level:
-                logging.info(
-                    f"[EPS] {upd.character_a} ↔ {target}: "
-                    f"{old} → {upd.new_intimacy_level} ({upd.event[:50]})"
-                )
-        if upd.new_eps_signals:
-            existing = set(r.get("eps_signals", []))
-            for sig in upd.new_eps_signals:
-                if sig and sig not in existing:
-                    r["eps_signals"].append(sig)
-                    existing.add(sig)
-            # Giữ tối đa 10 signals gần nhất
-            r["eps_signals"] = r["eps_signals"][-10:]
+    # ── EPS update — ĐỐI XỨNG, áp dụng cả 2 chiều ───────────────
+    # Intimacy là property của mối quan hệ, không phải cá nhân.
+    # Log chỉ 1 lần từ phía A (is_a=True).
+    if upd.new_intimacy_level and 1 <= upd.new_intimacy_level <= 5:
+        old = r.get("intimacy_level", 2)
+        r["intimacy_level"] = upd.new_intimacy_level
+        if old != upd.new_intimacy_level and is_a:
+            logging.info(
+                f"[EPS] {upd.character_a} ↔ {target}: "
+                f"{old} → {upd.new_intimacy_level} ({upd.event[:50]})"
+            )
+    if upd.new_eps_signals:
+        existing = set(r.get("eps_signals", []))
+        for sig in upd.new_eps_signals:
+            if sig and sig not in existing:
+                r["eps_signals"].append(sig)
+                existing.add(sig)
+        r["eps_signals"] = r["eps_signals"][-10:]
 
 
 def _build_profile(char: CharacterDetail, src: str, idx: int) -> dict:

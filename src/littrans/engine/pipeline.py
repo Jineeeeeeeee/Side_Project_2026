@@ -6,11 +6,20 @@ Luồng (USE_THREE_CALL=true — mặc định):
   ② Vòng lặp tuần tự:
        a. Scout refresh (nếu đến kỳ) + Pre-call
        b. Translation call (plain text)
-       c. Post-call (review + auto_fix + metadata)
-       d. Retry Trans-call nếu Post báo retry_required
-       e. Sync staging → Active
+       c. [FIX v5.1] Post-processor: 14-pass code cleanup (TRƯỚC quality_check)
+       d. Quality check cơ học
+       e. Post-call (review + metadata)
+       f. Retry Trans-call nếu Post báo retry_required
+       g. Sync staging → Active
   ③ Retry pass (RETRY_FAILED_PASSES vòng)
   ④ Final sync + Auto-merge + Tổng kết
+
+[FIX v5.1] post_processor.run() được gọi ngay sau mỗi call_translation(),
+           TRƯỚC quality_check() và Post-call. Đảm bảo AI Review thấy text
+           đã clean → giảm false positive "retry_required".
+
+[FIX v5.1] Bible mode: bỏ qua filter_glossary/chars/arc_mem khi
+           bible_mode=True — tất cả context đến từ BibleStore.
 
 Luồng cũ (USE_THREE_CALL=false):
   Giữ nguyên như v4.1 — 1 call nặng với structured JSON output.
@@ -26,6 +35,7 @@ from pathlib import Path
 from littrans.config.settings import settings
 from littrans.utils.io_utils import load_text, atomic_write
 from littrans.utils.text_normalizer import normalize as normalize_text
+from littrans.utils.post_processor  import run as pp_run, report as pp_report   # [FIX v5.1]
 from littrans.managers.glossary   import filter_glossary, add_new_terms, has_pending_terms, count_pending_terms
 from littrans.managers.characters import (filter_characters, update_from_response,
                                            sync_staging_to_active, has_staging_chars,
@@ -57,7 +67,6 @@ class Pipeline:
                 init_characters_from_bible()
             except Exception as _e:
                 print(f"  ⚠️  Bible init: {_e}")
-
 
         mode = "3-call" if settings.use_three_call else "1-call (legacy)"
         print(f"  ⚙️  Pipeline mode: {mode}")
@@ -160,7 +169,6 @@ class Pipeline:
         if not raw_text.strip():
             print(f"  ⚠️  File rỗng: {filename}"); return False
 
-        # Chuẩn hóa text: gom dòng vỡ, xóa dòng trống thừa trong box, v.v.
         text = normalize_text(raw_text)
 
         if settings.min_chars_per_chapter > 0 and len(text) < settings.min_chars_per_chapter:
@@ -188,17 +196,27 @@ class Pipeline:
         skip_data_update: bool,
     ) -> bool:
 
-        # Chuẩn bị context (dùng chung cho Pre và Trans call)
-        glossary_ctx  = filter_glossary(text)
-        char_profiles = filter_characters(text)
-        arc_mem       = load_arc_memory()
-        ctx_notes     = load_context_notes()
-        name_lock     = build_name_lock_table()
-        known_skills  = load_skills_for_chapter(text)
+        # ── [FIX v5.1] Chuẩn bị context ─────────────────────────
+        # name_lock và known_skills luôn cần (cả Bible mode và normal mode)
+        name_lock    = build_name_lock_table()
+        known_skills = load_skills_for_chapter(text)
 
-        total_terms = sum(len(v) for v in glossary_ctx.values())
-        print(f"     Glossary: {total_terms} · Characters: {len(char_profiles)} · "
-              f"Name Lock: {len(name_lock)} · Skills: {len(known_skills)}")
+        if settings.bible_mode and settings.bible_available:
+            # Bible mode: context đến từ BibleStore.get_entities_for_chapter()
+            # Bỏ qua filter_glossary/chars/arc_mem để tiết kiệm I/O + tránh conflict
+            glossary_ctx  = {}
+            char_profiles = {}
+            arc_mem       = ""
+            ctx_notes     = ""
+            print(f"     [Bible mode] Name Lock: {len(name_lock)} · Skills: {len(known_skills)}")
+        else:
+            glossary_ctx  = filter_glossary(text)
+            char_profiles = filter_characters(text)
+            arc_mem       = load_arc_memory()
+            ctx_notes     = load_context_notes()
+            total_terms   = sum(len(v) for v in glossary_ctx.values())
+            print(f"     Glossary: {total_terms} · Characters: {len(char_profiles)} · "
+                  f"Name Lock: {len(name_lock)} · Skills: {len(known_skills)}")
 
         # ── Step 1: Pre-call ──────────────────────────────────────
         print(f"  🔍 Pre-call...")
@@ -214,9 +232,7 @@ class Pipeline:
 
         time.sleep(settings.pre_call_sleep)
 
-        # ── Step 2: Translation call + retry loop ─────────────────
-
-        # ── [Bible Mode] Chọn prompt builder ─────────────────────
+        # ── Step 2: Build system prompt ───────────────────────────
         if settings.bible_mode and settings.bible_available:
             from littrans.bible.pipeline_bible_patch import build_bible_system_prompt
             system_prompt = build_bible_system_prompt(
@@ -229,18 +245,19 @@ class Pipeline:
             )
         else:
             system_prompt = build_translation_prompt(
-            instructions    = self._instructions,
-            glossary_ctx    = glossary_ctx,
-            char_profiles   = char_profiles,
-            arc_memory_text = arc_mem,
-            context_notes   = ctx_notes,
-            name_lock_table = name_lock,
-            known_skills    = known_skills,
-            chapter_map     = chapter_map,
-            budget_limit    = settings.budget_limit,
-            chapter_text    = text,
-        )
+                instructions    = self._instructions,
+                glossary_ctx    = glossary_ctx,
+                char_profiles   = char_profiles,
+                arc_memory_text = arc_mem,
+                context_notes   = ctx_notes,
+                name_lock_table = name_lock,
+                known_skills    = known_skills,
+                chapter_map     = chapter_map,
+                budget_limit    = settings.budget_limit,
+                chapter_text    = text,
+            )
 
+        # ── Step 3: Translation call + retry loop ─────────────────
         translation       = ""
         retry_instruction = ""
         max_trans         = settings.max_retries
@@ -253,6 +270,12 @@ class Pipeline:
                     if retry_instruction else text
                 )
                 translation = call_translation(system_prompt, input_text)
+
+                # [FIX v5.1] Post-processor: 14-pass code cleanup
+                # Chạy TRƯỚC quality_check và Post-call — AI Review thấy text sạch
+                translation, pp_changes = pp_run(translation)
+                if pp_changes:
+                    print(pp_report(pp_changes))
 
                 # Mechanical quality check (nhanh, không tốn API call)
                 ok_mech, mech_msg = quality_check(translation, text)
@@ -280,10 +303,9 @@ class Pipeline:
 
         time.sleep(settings.post_call_sleep)
 
-        # ── Step 3: Post-call + retry loop ────────────────────────
+        # ── Step 4: Post-call + retry loop ────────────────────────
         from littrans.engine.post_analyzer import run as post_run, PostResult
 
-        # Init an toàn — đảm bảo luôn có giá trị dù loop bị break sớm
         post_result = PostResult(
             final_translation = translation,
             passed            = True,
@@ -297,11 +319,9 @@ class Pipeline:
             post_result = post_run(text, final_translation, chapter_map, filename)
 
             if not post_result.ok:
-                # Post-call lỗi hoàn toàn — dùng bản dịch hiện tại và tiếp tục
                 print(f"  ⚠️  Post-call không hoạt động → dùng bản dịch hiện tại")
                 break
 
-            # Log issues
             if post_result.issues:
                 for issue in post_result.issues:
                     icon = "🔧" if issue.severity == "auto_fix" else "⚠️"
@@ -317,17 +337,21 @@ class Pipeline:
                 retry_instruction = post_result.retry_instruction
                 time.sleep(settings.post_call_sleep)
 
-                # Retry Trans-call
                 try:
                     input_text = f"⚠️ RETRY — {retry_instruction}\n\n---\n\n{text}"
                     final_translation = call_translation(system_prompt, input_text)
+
+                    # [FIX v5.1] Post-processor cũng chạy sau retry Trans-call
+                    final_translation, pp_changes = pp_run(final_translation)
+                    if pp_changes:
+                        print(pp_report(pp_changes))
+
                     time.sleep(settings.post_call_sleep)
                 except Exception as e:
                     logging.error(f"{filename} | post retry trans | {e}")
                     print(f"  ❌ Retry Trans lỗi: {e}")
-                    break  # không block pipeline
+                    break
             else:
-                # Hết lượt retry
                 print(f"  ⚠️  Vẫn còn lỗi dịch thuật sau {settings.post_call_max_retries} lần retry → ghi file để review")
                 final_translation = post_result.final_translation
                 break
@@ -345,7 +369,6 @@ class Pipeline:
         print(f"  ✅ Dịch xong: {filename}")
 
         # ── Update data từ Post-call metadata ─────────────────────
-
         # [Bible Mode] Update MainLore từ post metadata
         if settings.bible_mode and settings.bible_available and post_result.ok:
             try:
@@ -353,6 +376,7 @@ class Pipeline:
                 update_bible_from_post(post_result, filename, text)
             except Exception as _e:
                 pass  # không block pipeline
+
         if not skip_data_update and post_result.ok:
             self._update_data_from_post(post_result, filename, chapter_index, char_profiles)
 
@@ -710,7 +734,7 @@ class Pipeline:
         print(f"\n{'═'*62}")
         trans_info  = translation_model_info()
         gemini_info = settings.gemini_model
-        print(f"  Pipeline Dịch Truyện v4.5 — Trans: {trans_info}")
+        print(f"  Pipeline Dịch Truyện v5.1 — Trans: {trans_info}")
         print(f"  Scout/Pre/Post             — Gemini: {gemini_info}")
         print(f"{'─'*62}")
         print(f"  Mode             : {mode_str}")
