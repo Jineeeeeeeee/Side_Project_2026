@@ -57,6 +57,14 @@ _DEFAULTS: dict[str, Any] = {
     "clean_logs"    : [],
     # Misc
     "settings_saved": False,
+    # Bible System
+    "bible_scan_running"    : False,
+    "bible_scan_q"          : None,
+    "bible_scan_logs"       : [],
+    "bible_crossref_running": False,
+    "bible_crossref_q"      : None,
+    "bible_crossref_logs"   : [],
+    "bible_export_done"     : False,
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
@@ -1155,6 +1163,7 @@ def main() -> None:
             "glossary"  : "📚  Từ điển",
             "stats"     : "📊  Thống kê",
             "settings"  : "⚙️   Cài đặt",
+        "bible"     : "📖  Bible",
         }
         for key, label in _pages.items():
             t = "primary" if S.page == key else "secondary"
@@ -1211,6 +1220,7 @@ def main() -> None:
         "glossary"  : render_glossary,
         "stats"     : render_stats,
         "settings"  : render_settings,
+        "bible"     : render_bible,
     }
     _route.get(S.page, render_translate)()
 

@@ -50,6 +50,14 @@ class Pipeline:
         self._char_instructions = load_text(settings.prompt_character_file)
         if not self._char_instructions:
             print("⚠️  Không tìm thấy prompts/character_profile.md")
+        # [Bible Mode] Sync characters từ Bible vào Characters_Active
+        if settings.bible_mode and settings.bible_available:
+            try:
+                from littrans.bible.pipeline_bible_patch import init_characters_from_bible
+                init_characters_from_bible()
+            except Exception as _e:
+                print(f"  ⚠️  Bible init: {_e}")
+
 
         mode = "3-call" if settings.use_three_call else "1-call (legacy)"
         print(f"  ⚙️  Pipeline mode: {mode}")
@@ -207,7 +215,20 @@ class Pipeline:
         time.sleep(settings.pre_call_sleep)
 
         # ── Step 2: Translation call + retry loop ─────────────────
-        system_prompt = build_translation_prompt(
+
+        # ── [Bible Mode] Chọn prompt builder ─────────────────────
+        if settings.bible_mode and settings.bible_available:
+            from littrans.bible.pipeline_bible_patch import build_bible_system_prompt
+            system_prompt = build_bible_system_prompt(
+                instructions = self._instructions,
+                text         = text,
+                filename     = filename,
+                chapter_map  = chapter_map,
+                name_lock    = name_lock,
+                budget_limit = settings.budget_limit,
+            )
+        else:
+            system_prompt = build_translation_prompt(
             instructions    = self._instructions,
             glossary_ctx    = glossary_ctx,
             char_profiles   = char_profiles,
@@ -324,6 +345,14 @@ class Pipeline:
         print(f"  ✅ Dịch xong: {filename}")
 
         # ── Update data từ Post-call metadata ─────────────────────
+
+        # [Bible Mode] Update MainLore từ post metadata
+        if settings.bible_mode and settings.bible_available and post_result.ok:
+            try:
+                from littrans.bible.pipeline_bible_patch import update_bible_from_post
+                update_bible_from_post(post_result, filename, text)
+            except Exception as _e:
+                pass  # không block pipeline
         if not skip_data_update and post_result.ok:
             self._update_data_from_post(post_result, filename, chapter_index, char_profiles)
 

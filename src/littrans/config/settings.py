@@ -118,6 +118,15 @@ class Settings:
     log_dir      : Path = field(default_factory=lambda: Path(_env("LOG_DIR",     "logs")))
     prompts_dir  : Path = field(default_factory=lambda: Path(_env("PROMPTS_DIR", "prompts")))
 
+
+    # ── Bible System ──────────────────────────────────────────────
+    bible_mode          : bool = field(default_factory=lambda: _env_bool("BIBLE_MODE", False))
+    bible_scan_batch    : int  = field(default_factory=lambda: _env_int("BIBLE_SCAN_BATCH", 5))
+    bible_scan_sleep    : int  = field(default_factory=lambda: _env_int("BIBLE_SCAN_SLEEP", 10))
+    bible_scan_depth    : str  = field(default_factory=lambda: _env("BIBLE_SCAN_DEPTH", "standard"))
+    bible_cross_ref     : bool = field(default_factory=lambda: _env_bool("BIBLE_CROSS_REF", True))
+    _bible_dir_raw      : str  = field(default_factory=lambda: _env("BIBLE_DIR", "data/bible"))
+
     # ── Known valid model names (soft validation only — warn, không fail) ──────
     _KNOWN_ANTHROPIC_MODELS = frozenset({
         "claude-opus-4-6",
@@ -170,6 +179,11 @@ class Settings:
                   self.skills_file.parent]:
             p.mkdir(parents=True, exist_ok=True)
 
+        if self.bible_mode:
+            self.bible_dir.mkdir(parents=True, exist_ok=True)
+            (self.bible_dir / "database").mkdir(parents=True, exist_ok=True)
+            (self.bible_dir / "staging").mkdir(parents=True, exist_ok=True)
+
         self.log_dir.mkdir(parents=True, exist_ok=True)
         logging.basicConfig(
             filename=str(self.log_dir / "pipeline.log"),
@@ -179,6 +193,16 @@ class Settings:
         )
 
     # ── Derived paths ─────────────────────────────────────────────
+
+    @property
+    def bible_dir(self) -> Path:
+        return Path(self._bible_dir_raw)
+
+    @property
+    def bible_available(self) -> bool:
+        """True nếu Bible đã được scan ít nhất một phần."""
+        return (self.bible_dir / "meta.json").exists()
+
     @property
     def glossary_dir(self) -> Path:
         return self.data_dir / "glossary"

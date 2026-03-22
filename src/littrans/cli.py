@@ -28,6 +28,13 @@ app       = typer.Typer(name="littrans", help="LitRPG / Tu Tiên Translation Pip
 console   = Console()
 clean_app = typer.Typer(help="Công cụ làm sạch & quản lý data")
 app.add_typer(clean_app, name="clean")
+# Bible CLI group
+try:
+    from littrans.bible.bible_cli import bible_app
+    app.add_typer(bible_app, name="bible")
+except ImportError:
+    pass  # Bible package chưa có — bỏ qua
+
 
 
 # ═══════════════════════════════════════════════════════════════════
