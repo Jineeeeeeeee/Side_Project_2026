@@ -21,8 +21,11 @@ Cấu trúc build_translation_prompt() — 9 phần (thêm EPS so với v4):
 [v4] Token Budget: nếu budget_limit > 0 → smart truncation.
 [v5.0] Inject EPS summary sau Character profiles.
        Inject Scene Plan từ ChapterMap (pov, beats, tone).
+[v5.2] Fix EPS silent pass: dùng logging.warning thay vì pass.
 """
 from __future__ import annotations
+
+import logging
 
 from littrans.config.settings import settings
 
@@ -39,7 +42,7 @@ _CAT_LABELS = {
 
 
 # ═══════════════════════════════════════════════════════════════════
-# PUBLIC — Flow cũ (1 call)
+# PUBLIC — Flow cũ (1 call) — giữ lại cho backward compat với tools
 # ═══════════════════════════════════════════════════════════════════
 
 def build(
@@ -99,6 +102,7 @@ def build_translation_prompt(
     Assemble system prompt cho Translation call (3-call flow).
 
     v5.0: Thêm EPS summary vào Phần 3 và Scene Plan vào Phần 4.
+    v5.2: Fix EPS exception → logging thay vì pass.
     """
     glossary_ctx, char_profiles, arc_memory_text = _apply_budget_if_needed(
         budget_limit, instructions, "",
@@ -124,8 +128,9 @@ def build_translation_prompt(
             eps_block = format_eps_summary(char_profiles, chapter_text)
             if eps_block:
                 char_body = char_body + "\n\n" + eps_block
-        except Exception:
-            pass  # EPS là optional — không block nếu lỗi
+        except Exception as _e:
+            # EPS là optional — không block pipeline, nhưng log để debug
+            logging.warning(f"[PromptBuilder] EPS format lỗi: {_e}")
 
     parts.append(_section("PHẦN 3 — PROFILE NHÂN VẬT", char_body))
 

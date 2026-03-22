@@ -1,12 +1,12 @@
 """
 src/littrans/engine/pipeline.py — Điều phối pipeline dịch tuần tự.
 
-Luồng (USE_THREE_CALL=true — mặc định):
+Luồng (3-call, mặc định duy nhất từ v5.1):
   ① Nạp tài liệu, lọc chương chưa dịch
   ② Vòng lặp tuần tự:
        a. Scout refresh (nếu đến kỳ) + Pre-call
        b. Translation call (plain text)
-       c. [FIX v5.1] Post-processor: 14-pass code cleanup (TRƯỚC quality_check)
+       c. Post-processor: 14-pass code cleanup (TRƯỚC quality_check)
        d. Quality check cơ học
        e. Post-call (review + metadata)
        f. Retry Trans-call nếu Post báo retry_required
@@ -14,15 +14,15 @@ Luồng (USE_THREE_CALL=true — mặc định):
   ③ Retry pass (RETRY_FAILED_PASSES vòng)
   ④ Final sync + Auto-merge + Tổng kết
 
-[FIX v5.1] post_processor.run() được gọi ngay sau mỗi call_translation(),
-           TRƯỚC quality_check() và Post-call. Đảm bảo AI Review thấy text
-           đã clean → giảm false positive "retry_required".
+[v5.1] post_processor.run() được gọi ngay sau mỗi call_translation(),
+       TRƯỚC quality_check() và Post-call. Đảm bảo AI Review thấy text
+       đã clean → giảm false positive "retry_required".
 
-[FIX v5.1] Bible mode: bỏ qua filter_glossary/chars/arc_mem khi
-           bible_mode=True — tất cả context đến từ BibleStore.
+[v5.1] Bible mode: bỏ qua filter_glossary/chars/arc_mem khi
+       bible_mode=True — tất cả context đến từ BibleStore.
 
-Luồng cũ (USE_THREE_CALL=false):
-  Giữ nguyên như v4.1 — 1 call nặng với structured JSON output.
+[v5.2] Xóa legacy 1-call flow (USE_THREE_CALL). Pipeline luôn dùng 3-call.
+       Fix silent exception trong Bible mode → logging thay vì pass.
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ from pathlib import Path
 from littrans.config.settings import settings
 from littrans.utils.io_utils import load_text, atomic_write
 from littrans.utils.text_normalizer import normalize as normalize_text
-from littrans.utils.post_processor  import run as pp_run, report as pp_report   # [FIX v5.1]
+from littrans.utils.post_processor  import run as pp_run, report as pp_report
 from littrans.managers.glossary   import filter_glossary, add_new_terms, has_pending_terms, count_pending_terms
 from littrans.managers.characters import (filter_characters, update_from_response,
                                            sync_staging_to_active, has_staging_chars,
@@ -45,9 +45,9 @@ from littrans.managers.name_lock  import build_name_lock_table, validate_transla
 from littrans.managers.memory     import load_recent as load_arc_memory
 from littrans.engine.scout        import run as scout_run, should_refresh, load_context_notes
 from littrans.engine.prompt_builder import build as build_prompt, build_translation_prompt
-from littrans.engine.quality_guard  import check as quality_check, build_retry_prompt
+from littrans.engine.quality_guard  import check as quality_check
 from littrans.llm.client import (
-    call_gemini, call_translation,
+    call_translation,
     translation_model_info, is_rate_limit, handle_api_error, key_pool,
 )
 
@@ -60,16 +60,17 @@ class Pipeline:
         self._char_instructions = load_text(settings.prompt_character_file)
         if not self._char_instructions:
             print("⚠️  Không tìm thấy prompts/character_profile.md")
+
         # [Bible Mode] Sync characters từ Bible vào Characters_Active
         if settings.bible_mode and settings.bible_available:
             try:
                 from littrans.bible.pipeline_bible_patch import init_characters_from_bible
                 init_characters_from_bible()
             except Exception as _e:
+                logging.warning(f"[Pipeline] Bible init lỗi: {_e}")
                 print(f"  ⚠️  Bible init: {_e}")
 
-        mode = "3-call" if settings.use_three_call else "1-call (legacy)"
-        print(f"  ⚙️  Pipeline mode: {mode}")
+        print(f"  ⚙️  Pipeline mode: 3-call (pre+trans+post)")
 
     # ── Public ────────────────────────────────────────────────────
 
@@ -164,7 +165,7 @@ class Pipeline:
         chapter_index   : int,
         skip_data_update: bool = False,
     ) -> bool:
-        """Dịch 1 chương. Dispatch sang 3-call hoặc 1-call tùy settings."""
+        """Dịch 1 chương — luôn dùng 3-call flow."""
         raw_text = load_text(filepath)
         if not raw_text.strip():
             print(f"  ⚠️  File rỗng: {filename}"); return False
@@ -176,14 +177,9 @@ class Pipeline:
 
         print(f"\n▶  [{chapter_index+1}] Dịch: {filename}")
 
-        if settings.use_three_call:
-            return self._translate_three_call(
-                filename, text, out_filepath, chapter_index, skip_data_update
-            )
-        else:
-            return self._translate_one_call(
-                filename, text, out_filepath, chapter_index, skip_data_update
-            )
+        return self._translate_three_call(
+            filename, text, out_filepath, chapter_index, skip_data_update
+        )
 
     # ── 3-call flow ───────────────────────────────────────────────
 
@@ -196,14 +192,11 @@ class Pipeline:
         skip_data_update: bool,
     ) -> bool:
 
-        # ── [FIX v5.1] Chuẩn bị context ─────────────────────────
-        # name_lock và known_skills luôn cần (cả Bible mode và normal mode)
+        # ── Chuẩn bị context ─────────────────────────────────────
         name_lock    = build_name_lock_table()
         known_skills = load_skills_for_chapter(text)
 
         if settings.bible_mode and settings.bible_available:
-            # Bible mode: context đến từ BibleStore.get_entities_for_chapter()
-            # Bỏ qua filter_glossary/chars/arc_mem để tiết kiệm I/O + tránh conflict
             glossary_ctx  = {}
             char_profiles = {}
             arc_mem       = ""
@@ -271,13 +264,12 @@ class Pipeline:
                 )
                 translation = call_translation(system_prompt, input_text)
 
-                # [FIX v5.1] Post-processor: 14-pass code cleanup
-                # Chạy TRƯỚC quality_check và Post-call — AI Review thấy text sạch
+                # Post-processor: 14-pass code cleanup TRƯỚC quality_check
                 translation, pp_changes = pp_run(translation)
                 if pp_changes:
                     print(pp_report(pp_changes))
 
-                # Mechanical quality check (nhanh, không tốn API call)
+                # Mechanical quality check
                 ok_mech, mech_msg = quality_check(translation, text)
                 if not ok_mech:
                     print(f"  ⚠️  Lỗi cơ học ({attempt}/{max_trans}): {mech_msg}")
@@ -288,7 +280,7 @@ class Pipeline:
                     else:
                         print(f"  ⚠️  Vẫn còn lỗi cơ học sau {max_trans} lần.")
 
-                break  # Translation pass — sang Post-call
+                break
 
             except Exception as e:
                 logging.error(f"{filename} | trans attempt {attempt} | {e}")
@@ -330,7 +322,6 @@ class Pipeline:
             if post_result.passed or not post_result.has_retry_required():
                 break
 
-            # Có retry_required → retry Trans-call nếu còn lượt
             if (settings.trans_retry_on_quality
                     and post_attempt <= settings.post_call_max_retries):
                 print(f"  🔄 Retry Trans-call do lỗi dịch thuật...")
@@ -341,7 +332,6 @@ class Pipeline:
                     input_text = f"⚠️ RETRY — {retry_instruction}\n\n---\n\n{text}"
                     final_translation = call_translation(system_prompt, input_text)
 
-                    # [FIX v5.1] Post-processor cũng chạy sau retry Trans-call
                     final_translation, pp_changes = pp_run(final_translation)
                     if pp_changes:
                         print(pp_report(pp_changes))
@@ -368,15 +358,16 @@ class Pipeline:
         atomic_write(out_filepath, final_translation)
         print(f"  ✅ Dịch xong: {filename}")
 
-        # ── Update data từ Post-call metadata ─────────────────────
-        # [Bible Mode] Update MainLore từ post metadata
+        # ── [Bible Mode] Update MainLore từ post metadata ─────────
         if settings.bible_mode and settings.bible_available and post_result.ok:
             try:
                 from littrans.bible.pipeline_bible_patch import update_bible_from_post
                 update_bible_from_post(post_result, filename, text)
             except Exception as _e:
-                pass  # không block pipeline
+                logging.warning(f"[Pipeline] Bible update lỗi {filename}: {_e}")
+                print(f"  ⚠️  Bible update lỗi: {_e}")
 
+        # ── Update data từ Post-call metadata ─────────────────────
         if not skip_data_update and post_result.ok:
             self._update_data_from_post(post_result, filename, chapter_index, char_profiles)
 
@@ -384,107 +375,11 @@ class Pipeline:
         time.sleep(settings.success_sleep)
         return True
 
-    # ── 1-call flow (legacy) ──────────────────────────────────────
-
-    def _translate_one_call(
-        self,
-        filename        : str,
-        text            : str,
-        out_filepath    : str,
-        chapter_index   : int,
-        skip_data_update: bool,
-    ) -> bool:
-        """Flow cũ — giữ nguyên logic v4.1."""
-        glossary_ctx  = filter_glossary(text)
-        char_profiles = filter_characters(text)
-        arc_mem       = load_arc_memory()
-        ctx_notes     = load_context_notes()
-        name_lock     = build_name_lock_table()
-        known_skills  = load_skills_for_chapter(text)
-
-        total_terms = sum(len(v) for v in glossary_ctx.values())
-        print(f"     Glossary: {total_terms} · Characters: {len(char_profiles)} · "
-              f"Name Lock: {len(name_lock)} · Skills: {len(known_skills)}")
-
-        system_prompt = build_prompt(
-            instructions      = self._instructions,
-            glossary_ctx      = glossary_ctx,
-            char_profiles     = char_profiles,
-            char_instructions = self._char_instructions,
-            arc_memory_text   = arc_mem,
-            context_notes     = ctx_notes,
-            name_lock_table   = name_lock,
-            known_skills      = known_skills,
-            budget_limit      = settings.budget_limit,
-            chapter_text      = text,
-        )
-
-        quality_warning = ""
-
-        for attempt in range(1, settings.max_retries + 1):
-            try:
-                print(f"  ⚙️  API call {attempt}/{settings.max_retries} | {settings.gemini_model}")
-                input_text = (
-                    build_retry_prompt(text, quality_warning) if quality_warning else text
-                )
-
-                result = call_gemini(system_prompt, input_text)
-
-                ok, msg = quality_check(result.translation, text)
-                if not ok:
-                    logging.warning(f"{filename} | attempt {attempt} | Quality: {msg}")
-                    print(f"  ⚠️  Lỗi chất lượng ({attempt}/{settings.max_retries}): {msg}")
-                    if attempt < settings.max_retries:
-                        quality_warning = msg
-                        self._wait_quality(attempt)
-                        continue
-                    else:
-                        print(f"  ⚠️  Vẫn còn lỗi sau {settings.max_retries} lần.")
-
-                violations = validate_translation(result.translation, name_lock)
-                if violations:
-                    print(f"  🔒 Name Lock — {len(violations)} vi phạm:")
-                    for w in violations: print(f"     {w}")
-                    logging.warning(f"{filename} | Name Lock:\n" + "\n".join(violations))
-                    self._record_violations(violations, name_lock, filename)
-
-                atomic_write(out_filepath, result.translation)
-                print(f"  ✅ Dịch xong: {filename}")
-
-                if not skip_data_update:
-                    n_terms = add_new_terms(result.new_terms, filename)
-                    if n_terms: print(f"  📝 Thuật ngữ mới: {n_terms}")
-
-                    n_skills = add_skill_updates(result.skill_updates, filename)
-                    if n_skills: print(f"  ⚔️  Kỹ năng mới: {n_skills}")
-
-                    n_chars, n_rels = update_from_response(
-                        result.new_characters, result.relationship_updates,
-                        filename, chapter_index,
-                    )
-                    if n_chars:
-                        dest = "Active" if settings.immediate_merge else "Staging"
-                        print(f"  👤 Nhân vật mới: {n_chars} → {dest}")
-                    if n_rels: print(f"  🔗 Quan hệ cập nhật: {n_rels}")
-
-                touch_seen(list(char_profiles.keys()), chapter_index)
-                time.sleep(settings.success_sleep)
-                return True
-
-            except Exception as e:
-                logging.error(f"{filename} | attempt {attempt} | {e}")
-                print(f"  ❌ Lỗi {attempt}/{settings.max_retries}: {e}")
-                handle_api_error(e)
-                if attempt >= settings.max_retries:
-                    print(f"  🛑 Bỏ qua sau {settings.max_retries} lần."); return False
-                self._wait(e, attempt)
-
-        return False
-
     # ── Data update helpers ───────────────────────────────────────
 
     def _update_data_from_post(self, post_result, filename, chapter_index, char_profiles):
         """Update Master State từ metadata của Post-call."""
+        from pydantic import ValidationError
         from littrans.llm.schemas import (
             TermDetail, CharacterDetail, RelationshipUpdate, RelationshipDetail,
             SkillUpdate, PronounEntry,
@@ -494,15 +389,11 @@ class Pipeline:
         if post_result.new_terms:
             term_objects = []
             for t in post_result.new_terms:
-                if not isinstance(t, dict) or not t.get("english"):
+                if not isinstance(t, dict):
                     continue
                 try:
-                    term_objects.append(TermDetail(
-                        english    = t["english"],
-                        vietnamese = t.get("vietnamese", ""),
-                        category   = t.get("category", "general"),
-                    ))
-                except Exception as e:
+                    term_objects.append(TermDetail.model_validate(t))
+                except (ValidationError, Exception) as e:
                     logging.warning(f"[Pipeline] TermDetail parse lỗi: {e}")
             if term_objects:
                 n = add_new_terms(term_objects, filename)
@@ -512,18 +403,11 @@ class Pipeline:
         if post_result.skill_updates:
             skill_objects = []
             for s in post_result.skill_updates:
-                if not isinstance(s, dict) or not s.get("english"):
+                if not isinstance(s, dict):
                     continue
                 try:
-                    skill_objects.append(SkillUpdate(
-                        english      = s["english"],
-                        vietnamese   = s.get("vietnamese", ""),
-                        owner        = s.get("owner", ""),
-                        skill_type   = s.get("skill_type", "active"),
-                        evolved_from = s.get("evolved_from", ""),
-                        description  = s.get("description", ""),
-                    ))
-                except Exception as e:
+                    skill_objects.append(SkillUpdate.model_validate(s))
+                except (ValidationError, Exception) as e:
                     logging.warning(f"[Pipeline] SkillUpdate parse lỗi: {e}")
             if skill_objects:
                 n = add_skill_updates(skill_objects, filename)
@@ -536,66 +420,18 @@ class Pipeline:
                 if not isinstance(c, dict) or not c.get("name"):
                     continue
                 try:
-                    how_list = []
-                    for h in c.get("how_refers_to_others", []):
-                        if isinstance(h, dict) and h.get("target"):
-                            how_list.append(PronounEntry(
-                                target = h["target"],
-                                style  = h.get("style", ""),
-                            ))
-
-                    rel_list = []
-                    for r in c.get("relationships", []):
-                        if not isinstance(r, dict) or not r.get("with_character"):
-                            continue
-                        rel_list.append(RelationshipDetail(
-                            with_character = r["with_character"],
-                            rel_type       = r.get("rel_type", "neutral"),
-                            feeling        = r.get("feeling", ""),
-                            dynamic        = r.get("dynamic", ""),
-                            pronoun_status = r.get("pronoun_status", "weak"),
-                            current_status = r.get("current_status", ""),
-                            tension_points = r.get("tension_points", []),
-                            history        = [],
-                        ))
-
-                    char_obj = CharacterDetail(
-                        name                 = c["name"],
-                        full_name            = c.get("full_name", ""),
-                        canonical_name       = c.get("canonical_name", "").strip(),
-                        alias_canonical_map  = {
-                            k.strip(): v.strip()
-                            for k, v in c.get("alias_canonical_map", {}).items()
-                            if k.strip() and v.strip()
-                        },
-                        aliases              = c.get("aliases", []),
-                        active_identity      = c.get("active_identity", ""),
-                        identity_context     = c.get("identity_context", ""),
-                        current_title        = c.get("current_title", ""),
-                        faction              = c.get("faction", ""),
-                        cultivation_path     = c.get("cultivation_path", ""),
-                        current_level        = c.get("current_level", ""),
-                        signature_skills     = c.get("signature_skills", []),
-                        combat_style         = c.get("combat_style", ""),
-                        role                 = c.get("role", "Unknown"),
-                        archetype            = c.get("archetype", "UNKNOWN"),
-                        personality_traits   = c.get("personality_traits", []),
-                        pronoun_self         = c.get("pronoun_self", ""),
-                        formality_level      = c.get("formality_level", "medium"),
-                        formality_note       = c.get("formality_note", ""),
-                        how_refers_to_others = how_list,
-                        speech_quirks        = c.get("speech_quirks", []),
-                        habitual_behaviors   = [],
-                        relationships        = rel_list,
-                        relationship_to_mc   = c.get("relationship_to_mc", ""),
-                        current_goal         = c.get("current_goal", ""),
-                        hidden_goal          = c.get("hidden_goal", ""),
-                        current_conflict     = c.get("current_conflict", ""),
-                    )
-                    char_objects.append(char_obj)
-                except Exception as e:
-                    name = c.get("name", "?")
-                    logging.warning(f"[Pipeline] CharacterDetail parse lỗi [{name}]: {e}")
+                    # Normalize nested lists trước khi validate
+                    c_normalized = dict(c)
+                    # how_refers_to_others: list[dict] → đảm bảo format đúng
+                    how_raw = c_normalized.get("how_refers_to_others", [])
+                    if isinstance(how_raw, dict):
+                        # backward compat: dict → list
+                        c_normalized["how_refers_to_others"] = [
+                            {"target": k, "style": v} for k, v in how_raw.items()
+                        ]
+                    char_objects.append(CharacterDetail.model_validate(c_normalized))
+                except (ValidationError, Exception) as e:
+                    logging.warning(f"[Pipeline] CharacterDetail parse lỗi [{c.get('name','?')}]: {e}")
 
         # ── relationship_updates → RelationshipUpdate ─────────────
         rel_objects = []
@@ -604,19 +440,10 @@ class Pipeline:
                 if not isinstance(r, dict) or not r.get("character_a") or not r.get("character_b"):
                     continue
                 try:
-                    rel_objects.append(RelationshipUpdate(
-                        character_a       = r["character_a"],
-                        character_b       = r["character_b"],
-                        chapter           = filename,
-                        event             = r.get("event", ""),
-                        new_type          = r.get("new_type", ""),
-                        new_feeling       = r.get("new_feeling", ""),
-                        new_status        = r.get("new_status", ""),
-                        new_dynamic       = r.get("new_dynamic", ""),
-                        new_tension       = r.get("new_tension", ""),
-                        promote_to_strong = bool(r.get("promote_to_strong", False)),
-                    ))
-                except Exception as e:
+                    r_normalized = dict(r)
+                    r_normalized.setdefault("chapter", filename)
+                    rel_objects.append(RelationshipUpdate.model_validate(r_normalized))
+                except (ValidationError, Exception) as e:
                     logging.warning(f"[Pipeline] RelationshipUpdate parse lỗi: {e}")
 
         if char_objects or rel_objects:
@@ -730,11 +557,11 @@ class Pipeline:
             "tắt" if settings.budget_limit == 0
             else f"{settings.budget_limit:,} token"
         )
-        mode_str = "3-call (pre+trans+post)" if settings.use_three_call else "1-call (legacy)"
+        mode_str = "3-call (pre+trans+post)"
         print(f"\n{'═'*62}")
         trans_info  = translation_model_info()
         gemini_info = settings.gemini_model
-        print(f"  Pipeline Dịch Truyện v5.1 — Trans: {trans_info}")
+        print(f"  Pipeline Dịch Truyện v5.2 — Trans: {trans_info}")
         print(f"  Scout/Pre/Post             — Gemini: {gemini_info}")
         print(f"{'─'*62}")
         print(f"  Mode             : {mode_str}")

@@ -6,9 +6,8 @@ Chỉnh qua .env, KHÔNG sửa file này.
 [v4.3 FIX] _env_bool() xử lý đầy đủ các giá trị truthy phổ biến.
 [v4.4] Thêm 3 config cho Scout Glossary Suggest.
 [v4.5] Dual-Model: TRANSLATION_PROVIDER + TRANSLATION_MODEL + ANTHROPIC_API_KEY.
-       Cho phép chọn model dịch thuật ngay lúc bắt đầu mà không ảnh hưởng
-       đến các call khác (Scout, Pre, Post vẫn dùng Gemini).
 [v4.5.1] Bỏ ANTHROPIC_MODELS/GEMINI_MODELS chưa dùng → thêm soft validation warning.
+[v5.2] Xóa USE_THREE_CALL — pipeline luôn dùng 3-call flow.
 """
 from __future__ import annotations
 
@@ -47,11 +46,9 @@ def _default_translation_model() -> str:
     Gọi một lần lúc khởi tạo Settings.
     """
     provider = _env("TRANSLATION_PROVIDER", "gemini").strip().lower()
-    # Nếu user đã chỉ định rõ TRANSLATION_MODEL → dùng luôn
     explicit = _env("TRANSLATION_MODEL", "").strip()
     if explicit:
         return explicit
-    # Mặc định theo provider
     if provider == "anthropic":
         return "claude-sonnet-4-6"
     return _env("GEMINI_MODEL", "gemini-2.0-flash-exp")
@@ -67,9 +64,6 @@ class Settings:
     gemini_model          : str  = field(default_factory=lambda: _env("GEMINI_MODEL", "gemini-2.0-flash-exp"))
 
     # ── LLM — Translation Model (Dual-Model v4.5) ─────────────────
-    # TRANSLATION_PROVIDER: "gemini" | "anthropic"
-    # TRANSLATION_MODEL:    tên model cụ thể, hoặc để trống → tự chọn theo provider
-    # ANTHROPIC_API_KEY:    chỉ cần khi TRANSLATION_PROVIDER=anthropic
     anthropic_api_key     : str  = field(default_factory=lambda: _env("ANTHROPIC_API_KEY"))
     translation_provider  : str  = field(default_factory=lambda: _env("TRANSLATION_PROVIDER", "gemini").strip().lower())
     translation_model     : str  = field(default_factory=_default_translation_model)
@@ -82,7 +76,6 @@ class Settings:
     min_behavior_conf     : float = 0.65
 
     # ── 3-Call Architecture ───────────────────────────────────────
-    use_three_call        : bool = field(default_factory=lambda: _env_bool("USE_THREE_CALL", True))
     pre_call_sleep        : int  = field(default_factory=lambda: _env_int("PRE_CALL_SLEEP", 5))
     post_call_sleep       : int  = field(default_factory=lambda: _env_int("POST_CALL_SLEEP", 5))
     post_call_max_retries : int  = field(default_factory=lambda: _env_int("POST_CALL_MAX_RETRIES", 2))
@@ -118,7 +111,6 @@ class Settings:
     log_dir      : Path = field(default_factory=lambda: Path(_env("LOG_DIR",     "logs")))
     prompts_dir  : Path = field(default_factory=lambda: Path(_env("PROMPTS_DIR", "prompts")))
 
-
     # ── Bible System ──────────────────────────────────────────────
     bible_mode          : bool = field(default_factory=lambda: _env_bool("BIBLE_MODE", False))
     bible_scan_batch    : int  = field(default_factory=lambda: _env_int("BIBLE_SCAN_BATCH", 5))
@@ -127,7 +119,7 @@ class Settings:
     bible_cross_ref     : bool = field(default_factory=lambda: _env_bool("BIBLE_CROSS_REF", True))
     _bible_dir_raw      : str  = field(default_factory=lambda: _env("BIBLE_DIR", "data/bible"))
 
-    # ── Known valid model names (soft validation only — warn, không fail) ──────
+    # ── Known valid model names (soft validation only — warn, không fail) ──
     _KNOWN_ANTHROPIC_MODELS = frozenset({
         "claude-opus-4-6",
         "claude-sonnet-4-6",
@@ -160,8 +152,7 @@ class Settings:
                 "   Chỉ chấp nhận: gemini | anthropic"
             )
 
-        # Soft-validate model name — chỉ cảnh báo, không fail
-        # (model mới có thể chưa trong danh sách cứng)
+        # Soft-validate model name
         known = (
             self._KNOWN_ANTHROPIC_MODELS
             if self.translation_provider == "anthropic"
