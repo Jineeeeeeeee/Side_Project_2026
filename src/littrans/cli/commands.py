@@ -86,15 +86,39 @@ class CharAction(str, Enum):
     export   = "export"
     validate = "validate"
     archive  = "archive"
-
-
+    log      = "log"
+    diff     = "diff"
+ 
+ 
 @clean_app.command("characters")
 def clean_characters_cmd(
-    action: CharAction = typer.Option(CharAction.review, "--action", "-a", help="Hành động"),
+    action  : CharAction      = typer.Option(CharAction.review, "--action", "-a",
+                                  help="Hành động: review|merge|fix|export|validate|archive|log|diff"),
+    name    : Optional[str]   = typer.Option(None, "--name", "-n",
+                                  help="Tên nhân vật (dùng với log, diff)"),
+    rel     : Optional[str]   = typer.Option(None, "--rel",
+                                  help="Tên nhân vật kia (lọc log theo relationship)"),
+    chapter : Optional[str]   = typer.Option(None, "--chapter", "-c",
+                                  help="Chương A (dùng với diff). VD: chapter_031.txt"),
+    chapter2: Optional[str]   = typer.Option(None, "--chapter2",
+                                  help="Chương B (dùng với diff). VD: chapter_050.txt"),
 ):
-    """Quản lý Character Profile."""
-    from littrans.cli.tool_clean_chars import run_action   # ← ĐỔI: tools → cli
-    run_action(action.value)
+    """Quản lý Character Profile.
+ 
+    Ví dụ:
+      python main.py clean characters --action log
+      python main.py clean characters --action log --name Klein
+      python main.py clean characters --action log --name Klein --rel Arthur
+      python main.py clean characters --action diff --name Klein --chapter chapter_010.txt --chapter2 chapter_040.txt
+    """
+    from littrans.cli.tool_clean_chars import run_action
+    run_action(
+        action.value,
+        name    = name,
+        chapter = chapter,
+        chapter2= chapter2,
+        rel     = rel,
+    )
 
 
 # ── FIX-NAMES ─────────────────────────────────────────────────────

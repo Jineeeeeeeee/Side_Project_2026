@@ -1,5 +1,5 @@
 """
-src/littrans/managers/characters.py — Tiered Characters + Identity Tracking + Emotion Tracker.
+src/littrans/context/characters.py — Tiered Characters + Identity Tracking + Emotion Tracker.
 
 Tầng:
   Active  (Characters_Active.json)  → nhân vật xuất hiện gần đây
@@ -17,6 +17,12 @@ Tầng:
   relationships[X].eps_signals    (list[str])
   _fmt_rel() hiển thị EPS bar + hint cho AI dịch
   _apply_rel() cập nhật intimacy_level và eps_signals
+
+[v5.1] Character History Engine:
+  profile["_history"]                     — commit log cấp profile
+  profile["relationships"][X]["_rel_history"] — commit log cấp relationship
+  Commit ID = tên chương (chapter_031.txt)
+  Tracked fields: power, identity, arc, personality, emotion
 """
 from __future__ import annotations
 
@@ -30,6 +36,13 @@ from littrans.utils.io_utils import load_json, save_json
 from littrans.llm.schemas import (
     CharacterDetail, RelationshipUpdate,
     EPS_LABELS, EPS_BAR,
+)
+from littrans.context.char_history import (
+    diff_profile, diff_rel, diff_rel_from_eps,
+    append_commit, make_created_commit,
+    get_log, get_log_rel, get_log_all_rels,
+    format_log_terminal,
+    HISTORY_LIMIT, REL_HISTORY_LIMIT,
 )
 
 _lock  = threading.Lock()
@@ -52,7 +65,7 @@ _VALID_ROLES = {
 def _empty_db() -> dict:
     return {
         "meta": {
-            "schema_version": "3.1",  # bump cho EPS
+            "schema_version": "3.2",   # bump cho history
             "story_genre": "LitRPG",
             "main_character": "",
             "last_updated_chapter": "",
@@ -130,7 +143,6 @@ def _fmt(name: str, p: dict, text: str, mc_name: str, archived: bool = False) ->
     header = f"### {name}{'  [ARCHIVE]' if archived else ''}  [{p.get('role','?')}] | {p.get('archetype','')}"
     lines  = [header]
 
-    # Emotion warning
     em    = p.get("emotional_state", {})
     state = em.get("current", "normal")
     if state and state != "normal":
@@ -148,7 +160,6 @@ def _fmt(name: str, p: dict, text: str, mc_name: str, archived: bool = False) ->
                 lines.append(f"│ Lý do: {reason}")
             lines += [f"└{'─'*58}", ""]
 
-    # Identity warning
     ai = p.get("active_identity", "")
     if ai and ai != name:
         lines.append(f"**⚠️  Đang hoạt động với danh tính: {ai}**")
@@ -172,7 +183,6 @@ def _fmt(name: str, p: dict, text: str, mc_name: str, archived: bool = False) ->
         f"- Ghi chú formality: {speech.get('formality_note', '—')}",
     ]
 
-    # Strong / weak relationship pronouns
     strong_entries, weak_entries = [], []
     for other, r in rels.items():
         if not r.get("dynamic"):
@@ -189,7 +199,6 @@ def _fmt(name: str, p: dict, text: str, mc_name: str, archived: bool = False) ->
             lines.append(f"  │  🔸 WEAK    {name} ↔ {other}: **{dyn}**  (tạm thời, xác nhận khi tương tác)")
         lines.append("  └─")
 
-    # Fallback how_refers_to_others
     how = speech.get("how_refers_to_others", {})
     if isinstance(how, list):
         how = {e.get("target", ""): e.get("style", "") for e in how}
@@ -252,7 +261,6 @@ def _name_in_text(name: str, text: str) -> bool:
 def _fmt_rel(other: str, r: dict) -> list[str]:
     status_icon = "✅ strong" if r.get("pronoun_status") == "strong" else "🔸 weak"
 
-    # EPS display
     intimacy = r.get("intimacy_level", 2)
     if not isinstance(intimacy, int) or not (1 <= intimacy <= 5):
         intimacy = 2
@@ -281,10 +289,6 @@ def _fmt_rel(other: str, r: dict) -> list[str]:
 # ── EPS format for prompt_builder ────────────────────────────────
 
 def format_eps_summary(char_profiles: dict[str, str], chapter_text: str) -> str:
-    """
-    Tạo bảng EPS ngắn gọn để inject vào Trans-call prompt.
-    Chỉ hiển thị các cặp nhân vật XUẤT HIỆN trong chương.
-    """
     active  = load_active(include_staging=True)
     chars   = active.get("characters", {})
 
@@ -396,7 +400,12 @@ def update_from_response(
             ev = {"chapter": source_chapter, "event": upd.event}
             for owner, target, is_a in [(a, b, True), (b, a, False)]:
                 if owner in chars:
-                    _apply_rel(chars[owner].setdefault("relationships", {}), target, upd, ev, is_a)
+                    _apply_rel(
+                        chars[owner].setdefault("relationships", {}),
+                        target, upd, ev, is_a,
+                        owner_profile=chars[owner],
+                        source_chapter=source_chapter,
+                    )
             rels_updated += 1
 
         if settings.immediate_merge and (chars_added or rels_updated):
@@ -463,21 +472,54 @@ def character_stats() -> dict[str, int]:
     }
 
 
+# ── History public API ────────────────────────────────────────────
+
+def character_log(name: str, rel_name: str | None = None) -> str:
+    """
+    Trả về formatted git-style log cho 1 nhân vật.
+    rel_name: nếu không None → chỉ hiện history của relationship đó.
+    """
+    with _lock:
+        active_data  = load_active()
+        archive_data = load_archive()
+        chars        = active_data.get("characters", {})
+        arch_chars   = archive_data.get("characters", {})
+
+    profile = chars.get(name) or arch_chars.get(name)
+    if not profile:
+        return f"  ❌ Không tìm thấy nhân vật '{name}'"
+
+    return format_log_terminal(name, profile, rel_name)
+
+
 # ── Apply relationship update ─────────────────────────────────────
 
-def _apply_rel(rels: dict, target: str, upd: RelationshipUpdate, event: dict, is_a: bool) -> None:
+def _apply_rel(
+    rels          : dict,
+    target        : str,
+    upd           : RelationshipUpdate,
+    event         : dict,
+    is_a          : bool,
+    owner_profile : dict | None = None,
+    source_chapter: str = "",
+) -> None:
     if target not in rels:
         rels[target] = {
             "type": "", "feeling": "", "dynamic": "",
             "pronoun_status": "weak",
             "current_status": "", "tension_points": [], "history": [],
             "intimacy_level": 2, "eps_signals": [],
+            "_rel_history": [],
         }
     r = rels[target]
     r.setdefault("history", []).append(event)
     r.setdefault("pronoun_status", "weak")
     r.setdefault("intimacy_level", 2)
     r.setdefault("eps_signals", [])
+    r.setdefault("_rel_history", [])
+
+    # ── Snapshot TRƯỚC khi thay đổi (dùng cho diff) ──────────────
+    old_rel = deepcopy(r) if source_chapter else None
 
     if is_a:
         if upd.new_type:    r["type"]           = upd.new_type
@@ -493,9 +535,7 @@ def _apply_rel(rels: dict, target: str, upd: RelationshipUpdate, event: dict, is
         elif upd.promote_to_strong:
             r["pronoun_status"] = "strong"
 
-    # ── EPS update — ĐỐI XỨNG, áp dụng cả 2 chiều ───────────────
-    # Intimacy là property của mối quan hệ, không phải cá nhân.
-    # Log chỉ 1 lần từ phía A (is_a=True).
+    # ── EPS update ────────────────────────────────────────────────
     if upd.new_intimacy_level and 1 <= upd.new_intimacy_level <= 5:
         old = r.get("intimacy_level", 2)
         r["intimacy_level"] = upd.new_intimacy_level
@@ -511,6 +551,34 @@ def _apply_rel(rels: dict, target: str, upd: RelationshipUpdate, event: dict, is
                 r["eps_signals"].append(sig)
                 existing.add(sig)
         r["eps_signals"] = r["eps_signals"][-10:]
+
+    # ── Ghi relationship history commit ──────────────────────────
+    if source_chapter and old_rel and is_a:
+        upd_dict = {
+            "new_dynamic"       : upd.new_dynamic,
+            "new_type"          : upd.new_type,
+            "new_feeling"       : upd.new_feeling,
+            "new_status"        : upd.new_status,
+            "new_intimacy_level": upd.new_intimacy_level,
+            "promote_to_strong" : upd.promote_to_strong,
+        }
+        rel_commit = diff_rel(old_rel, upd_dict, source_chapter, target)
+        if rel_commit:
+            r["_rel_history"] = append_commit(
+                r.get("_rel_history", []),
+                rel_commit,
+                REL_HISTORY_LIMIT,
+            )
+
+        # EPS signals commit (separate nếu có signals mới)
+        if upd.new_eps_signals:
+            eps_commit = diff_rel_from_eps(old_rel, upd.new_eps_signals, source_chapter, target)
+            if eps_commit:
+                r["_rel_history"] = append_commit(
+                    r["_rel_history"],
+                    eps_commit,
+                    REL_HISTORY_LIMIT,
+                )
 
 
 def _build_profile(char: CharacterDetail, src: str, idx: int) -> dict:
@@ -528,6 +596,8 @@ def _build_profile(char: CharacterDetail, src: str, idx: int) -> dict:
             # EPS fields
             "intimacy_level": max(1, min(5, rel.intimacy_level)),
             "eps_signals"   : list(rel.eps_signals)[:10],
+            # History
+            "_rel_history"  : [],
         }
     return {
         "identity"         : {
@@ -573,4 +643,52 @@ def _build_profile(char: CharacterDetail, src: str, idx: int) -> dict:
         },
         "first_seen"              : src,
         "last_seen_chapter_index" : idx,
+        # History — commit đầu tiên khi tạo
+        "_history"                : [make_created_commit(src)],
     }
+
+
+# ── update_character_history (dùng bởi Scout emotion tracker) ────
+
+def update_character_history_from_scout(
+    name          : str,
+    chapter       : str,
+    field_updates : dict,
+) -> bool:
+    """
+    Scout AI cập nhật emotional_state, arc_status.current_goal, v.v.
+    field_updates: {dotpath: new_value}
+    Ghi commit với trigger="scout".
+
+    Trả về True nếu có thay đổi và đã lưu.
+    """
+    with _lock:
+        active_data = load_active()
+        chars       = active_data.get("characters", {})
+        if name not in chars:
+            return False
+
+        profile  = chars[name]
+        old_snap = deepcopy(profile)
+
+        # Áp dụng updates
+        for dotpath, value in field_updates.items():
+            parts = dotpath.split(".")
+            cur   = profile
+            for part in parts[:-1]:
+                cur = cur.setdefault(part, {})
+            cur[parts[-1]] = value
+
+        # Diff và commit
+        commit = diff_profile(old_snap, profile, chapter, trigger="scout")
+        if commit:
+            commit["commit"] = f"{chapter}#scout"
+            profile["_history"] = append_commit(
+                profile.get("_history", []),
+                commit,
+                HISTORY_LIMIT,
+            )
+            save_json(settings.characters_active_file, active_data)
+            return True
+
+    return False

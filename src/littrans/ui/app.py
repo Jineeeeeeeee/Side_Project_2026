@@ -662,34 +662,38 @@ def render_characters() -> None:
 
 
 def _char_card(name: str, p: dict) -> None:
+    """Character card với 2 tab: Profile và Lịch sử."""
     speech = p.get("speech", {})
     power  = p.get("power", {})
     ident  = p.get("identity", {})
     arc    = p.get("arc_status", {})
     em     = p.get("emotional_state", {})
     rels   = p.get("relationships", {})
-
+ 
     palettes = [
         ("#E1F5EE", "#085041"), ("#EEEDFE", "#3C3489"),
         ("#E6F1FB", "#0C447C"), ("#FAEEDA", "#633806"),
         ("#FCEBEB", "#791F1F"), ("#EAF3DE", "#3B6D11"),
     ]
-    bg, fg  = palettes[sum(ord(c) for c in name) % len(palettes)]
+    bg, fg   = palettes[sum(ord(c) for c in name) % len(palettes)]
     initials = "".join(w[0].upper() for w in name.split()[:2]) or name[:2].upper()
-
-    state  = em.get("current", "normal")
-    em_html = {
+ 
+    state = em.get("current", "normal")
+    em_map = {
         "angry"  : '<span class="badge badge-err">ANGRY</span>',
         "hurt"   : '<span class="badge badge-warn">HURT</span>',
         "changed": '<span class="badge badge-info">CHANGED</span>',
-    }.get(state, "")
-
+    }
+    em_html = em_map.get(state, "")
+ 
     pronoun_self = speech.get("pronoun_self", "—")
     level        = power.get("current_level", "—")
     faction      = ident.get("faction", p.get("faction", ""))
-    goal_raw     = (arc.get("current_goal", "") if arc else "")
+    goal_raw     = arc.get("current_goal", "") if arc else ""
     goal         = goal_raw[:70] + "…" if len(goal_raw) > 70 else goal_raw
-
+    history      = p.get("_history", [])
+    commit_count = len(history)
+ 
     with st.container(border=True):
         avatar_col, info_col = st.columns([1, 4])
         with avatar_col:
@@ -701,30 +705,140 @@ def _char_card(name: str, p: dict) -> None:
                 unsafe_allow_html=True,
             )
         with info_col:
-            role_label = f"{p.get('role','?')} · {p.get('archetype','')}"
             st.markdown(f"**{name}**")
-            st.caption(role_label)
+            st.caption(p.get("role", "?"))
             if em_html:
                 st.markdown(em_html, unsafe_allow_html=True)
-
-        st.divider()
-        st.caption(f"Tự xưng: **{pronoun_self}** · Cấp: **{level}**")
-        if faction:
-            st.caption(f"Phe: {faction}")
-        if goal:
-            st.caption(f"Mục tiêu: {goal}")
-
-        for other, rel in list(rels.items())[:2]:
-            dyn    = rel.get("dynamic", "")
-            status = rel.get("pronoun_status", "weak")
-            if not dyn:
-                continue
-            icon = "✓" if status == "strong" else "🔸"
-            css  = "strong-lock" if status == "strong" else "weak-lock"
+ 
+        tab_profile, tab_history = st.tabs([
+            "Profile",
+            f"Lịch sử ({commit_count})",
+        ])
+ 
+        with tab_profile:
+            st.caption(f"Tự xưng: **{pronoun_self}** · Cấp: **{level}**")
+            if faction:
+                st.caption(f"Phe: {faction}")
+            if goal:
+                st.caption(f"Mục tiêu: {goal}")
+ 
+            for other, rel in list(rels.items())[:2]:
+                dyn    = rel.get("dynamic", "")
+                status = rel.get("pronoun_status", "weak")
+                if not dyn:
+                    continue
+                icon = "✓" if status == "strong" else "🔸"
+                css  = "strong-lock" if status == "strong" else "weak-lock"
+                st.markdown(
+                    f'<span class="{css}">{icon} {name} ↔ {other}: <b>{dyn}</b></span>',
+                    unsafe_allow_html=True,
+                )
+ 
+        with tab_history:
+            _render_char_history(name, p)
+ 
+ 
+def _render_char_history(name: str, p: dict) -> None:
+    """Render lịch sử commits của 1 nhân vật."""
+    try:
+        from littrans.context.char_history import (
+            get_log, get_log_rel, get_log_all_rels,
+        )
+    except ImportError:
+        st.caption("char_history module chưa được cài.")
+        return
+ 
+    history = get_log(p, limit=30)
+    if not history:
+        st.caption("Chưa có lịch sử thay đổi nào.")
+        return
+ 
+    # ── Filter by relationship ────────────────────────────────────
+    rel_options = ["Tất cả"] + list(p.get("relationships", {}).keys())
+    sel_rel = st.selectbox(
+        "Lọc theo",
+        rel_options,
+        key=f"hist_rel_{name}",
+        label_visibility="collapsed",
+    )
+ 
+    if sel_rel != "Tất cả":
+        history = get_log_rel(p, sel_rel, limit=20)
+        st.caption(f"{len(history)} commits liên quan đến {sel_rel}")
+    else:
+        total = len(p.get("_history", []))
+        st.caption(f"{total} commits tổng · đang hiển thị {len(history)} gần nhất")
+ 
+    # ── Render commits ────────────────────────────────────────────
+    trigger_badge_map = {
+        "post_call"          : ("badge-info", "post_call"),
+        "scout"              : ("badge-ok",   "scout"),
+        "relationship_update": ("badge-warn", "rel"),
+        "manual"             : ("badge-dim",  "manual"),
+    }
+ 
+    for commit in history:
+        cid     = commit["commit"]
+        trigger = commit.get("trigger", "")
+        ts      = commit.get("timestamp", "")
+        changes = commit.get("changes", {})
+ 
+        badge_cls, badge_label = trigger_badge_map.get(trigger, ("badge-dim", trigger))
+ 
+        with st.expander(f"{cid}  ·  {ts}", expanded=False):
             st.markdown(
-                f'<span class="{css}">{icon} {name} ↔ {other}: <b>{dyn}</b></span>',
+                f'<span class="badge {badge_cls}">{badge_label}</span>',
                 unsafe_allow_html=True,
             )
+ 
+            if "__created__" in changes:
+                st.caption("_(nhân vật được tạo lần đầu)_")
+                continue
+ 
+            for field, diff in changes.items():
+                if not isinstance(diff, dict):
+                    continue
+ 
+                if "added" in diff:
+                    # List diff (personality_traits, signature_skills)
+                    st.markdown(f"`{field}`")
+                    for item in diff.get("added", []):
+                        st.markdown(
+                            f'<span style="color:var(--color-text-success)">+ {item}</span>',
+                            unsafe_allow_html=True,
+                        )
+                    for item in diff.get("removed", []):
+                        st.markdown(
+                            f'<span style="color:var(--color-text-danger);'
+                            f'text-decoration:line-through">- {item}</span>',
+                            unsafe_allow_html=True,
+                        )
+ 
+                elif "old" in diff:
+                    # Scalar diff
+                    old_v = str(diff["old"]) if diff["old"] else "_(trống)_"
+                    new_v = str(diff["new"]) if diff["new"] else "_(trống)_"
+                    st.markdown(f"`{field}`")
+                    col1, col2 = st.columns(2)
+                    col1.markdown(
+                        f'<span style="color:var(--color-text-danger)">- {old_v}</span>',
+                        unsafe_allow_html=True,
+                    )
+                    col2.markdown(
+                        f'<span style="color:var(--color-text-success)">+ {new_v}</span>',
+                        unsafe_allow_html=True,
+                    )
+ 
+    # ── Relationship history summary ──────────────────────────────
+    if sel_rel == "Tất cả":
+        all_rel_h = get_log_all_rels(p)
+        if all_rel_h:
+            st.divider()
+            st.caption("Relationship commits:")
+            for target, commits in all_rel_h.items():
+                st.caption(f"  ↔ {target}: {len(commits)} commits")
+
+
 
 
 # ══════════════════════════════════════════════════════════════════
