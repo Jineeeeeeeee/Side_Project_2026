@@ -3,7 +3,8 @@ src/littrans/llm/client.py — Gemini API client + Multi-Key Pool + Anthropic di
 
 [v4.5] Dual-Model support.
 [v4.6] Timeout: API_TIMEOUT=90s + _call_with_timeout() wrapper.
-       Tránh thread bị block vô thời hạn khi API treo không trả lỗi.
+[FIX]  call_gemini_json: unwrap JSON array response → dict.
+       AI đôi khi trả về [{...}] thay vì {...} → gây lỗi 'list has no attribute get'.
 """
 from __future__ import annotations
 
@@ -21,7 +22,6 @@ from littrans.llm.schemas import TranslationResult, GEMINI_SCHEMA
 
 
 # ── Timeout cho mọi API call ──────────────────────────────────────
-# 90s: đủ lớn cho chapter ~15k chars, đủ nhỏ để không treo UI mãi.
 API_TIMEOUT: int = 90
 
 
@@ -38,17 +38,7 @@ class AllKeysExhaustedError(Exception):
 # ═══════════════════════════════════════════════════════════════════
 
 def _call_with_timeout(fn, timeout: int = API_TIMEOUT):
-    """
-    Chạy fn() trong thread riêng, raise TimeoutError nếu quá hạn.
-
-    Dùng cho mọi blocking API call (Gemini, Anthropic) để tránh thread
-    bị treo vô thời hạn khi mạng chậm hoặc API server không phản hồi.
-
-    Lý do dùng ThreadPoolExecutor thay vì asyncio:
-      - Toàn bộ pipeline hiện tại là synchronous.
-      - Không cần event loop, không phụ thuộc SDK version.
-      - concurrent.futures.TimeoutError → raise TimeoutError rõ ràng.
-    """
+    """Chạy fn() trong thread riêng, raise TimeoutError nếu quá hạn."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(fn)
         try:
@@ -133,12 +123,6 @@ _anthropic_lock   = threading.Lock()
 
 
 def _get_anthropic_client():
-    """
-    Lazy-init Anthropic client.
-    Không import lúc module load để tránh crash khi chưa cài anthropic SDK.
-
-    [v4.6] timeout=API_TIMEOUT: tránh treo khi Anthropic server không phản hồi.
-    """
     global _anthropic_client
     if _anthropic_client is not None:
         return _anthropic_client
@@ -154,22 +138,16 @@ def _get_anthropic_client():
             )
         _anthropic_client = anthropic.Anthropic(
             api_key=settings.anthropic_api_key,
-            timeout=float(API_TIMEOUT),   # [FIX v4.6] tránh treo vô thời hạn
+            timeout=float(API_TIMEOUT),
         )
         return _anthropic_client
 
 
 # ═══════════════════════════════════════════════════════════════════
-# PUBLIC — DISPATCHER (entry point cho pipeline)
+# PUBLIC — DISPATCHER
 # ═══════════════════════════════════════════════════════════════════
 
 def call_translation(system_prompt: str, chapter_text: str) -> str:
-    """
-    ★ Entry point chính cho Trans-call (3-call flow).
-
-    Tự động dispatch sang Gemini hoặc Anthropic dựa trên
-    settings.translation_provider và settings.translation_model.
-    """
     if settings.using_anthropic:
         return call_anthropic_translation(system_prompt, chapter_text)
     else:
@@ -214,11 +192,7 @@ def call_gemini(system_prompt: str, chapter_text: str) -> TranslationResult:
 
 
 def call_gemini_translation(system_prompt: str, chapter_text: str) -> str:
-    """
-    Gemini Trans-call — plain text output.
-
-    [v4.6] Wrapped trong _call_with_timeout() để tránh thread treo.
-    """
+    """Gemini Trans-call — plain text output."""
     model = (
         settings.translation_model
         if settings.translation_provider == "gemini"
@@ -254,12 +228,7 @@ def call_gemini_translation(system_prompt: str, chapter_text: str) -> str:
 
 
 def call_anthropic_translation(system_prompt: str, chapter_text: str) -> str:
-    """
-    Anthropic (Claude) Trans-call — plain text output.
-
-    [v4.6] Wrapped trong _call_with_timeout() — timeout được set cả ở
-    client level (httpx) lẫn wrapper level để double-protection.
-    """
+    """Anthropic (Claude) Trans-call — plain text output."""
     client = _get_anthropic_client()
     model  = settings.translation_model
 
@@ -267,16 +236,13 @@ def call_anthropic_translation(system_prompt: str, chapter_text: str) -> str:
         return client.messages.create(
             model=model,
             max_tokens=8096,
-            temperature=1,          # Anthropic khuyến nghị temp=1 cho Claude 3+
+            temperature=1,
             system=system_prompt,
-            messages=[
-                {"role": "user", "content": chapter_text}
-            ],
+            messages=[{"role": "user", "content": chapter_text}],
         )
 
     response = _call_with_timeout(_do)
 
-    # Log token usage
     if hasattr(response, "usage") and response.usage:
         u = response.usage
         _log_tokens(
@@ -285,7 +251,6 @@ def call_anthropic_translation(system_prompt: str, chapter_text: str) -> str:
             "—",
         )
 
-    # Extract text từ content blocks
     text = ""
     for block in response.content:
         if hasattr(block, "text"):
@@ -316,8 +281,13 @@ def call_gemini_text(system_prompt: str, user_text: str) -> str:
 
 def call_gemini_json(system_prompt: str, user_text: str) -> dict:
     """
-    Emotion Tracker, clean_glossary, Pre-call, Post-call — JSON tự do.
+    Emotion Tracker, clean_glossary, Pre-call, Post-call, Bible scan — JSON tự do.
     Luôn dùng Gemini.
+
+    [FIX] Xử lý trường hợp AI trả về JSON array thay vì object:
+      - [...] với 1 dict element  → unwrap, trả về dict đó
+      - [...] với nhiều elements  → unwrap element đầu tiên là dict
+      - [] hoặc không có dict     → trả về {}
     """
     def _do():
         return key_pool.current_client.models.generate_content(
@@ -332,9 +302,34 @@ def call_gemini_json(system_prompt: str, user_text: str) -> dict:
 
     response = _call_with_timeout(_do)
     key_pool.on_success()
+
     raw   = response.text or "{}"
     clean = re.sub(r"^```json\s*|```\s*$", "", raw.strip(), flags=re.MULTILINE)
-    return json.loads(clean)
+
+    try:
+        data = json.loads(clean)
+    except json.JSONDecodeError as e:
+        logging.error(f"[call_gemini_json] JSON parse lỗi: {e} | raw[:200]: {raw[:200]}")
+        raise
+
+    # [FIX] AI đôi khi trả về JSON array thay vì object
+    # Ví dụ: [{...}] hoặc [{...}, {...}]
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                logging.warning(
+                    f"[call_gemini_json] Response là JSON array (size={len(data)}) "
+                    "— unwrap lấy dict đầu tiên"
+                )
+                return item
+        # List rỗng hoặc không có dict nào
+        logging.warning(
+            f"[call_gemini_json] Response là list không có dict element: "
+            f"{str(data)[:100]}"
+        )
+        return {}
+
+    return data
 
 
 # ═══════════════════════════════════════════════════════════════════
