@@ -25,6 +25,7 @@ for _p in [str(_ROOT), str(_ROOT / "src")]:
 
 import streamlit as st
 from littrans.ui.bible_ui import render_bible_tab as render_bible
+from littrans.ui.epub_ui import render_epub_tab as render_epub
 import streamlit.components.v1 as components
 
 st.set_page_config(
@@ -61,6 +62,10 @@ _DEFAULTS: dict[str, Any] = {
     "bible_crossref_q"      : None,
     "bible_crossref_logs"   : [],
     "bible_export_done"     : False,
+    # epub
+    "epub_running"          : False,
+    "epub_q"                : None,
+    "epub_logs"             : [],
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
@@ -1085,6 +1090,7 @@ def main() -> None:
             "stats"     : "📊  Thống kê",
             "settings"  : "⚙️   Cài đặt",
             "bible"     : "📖  Bible",
+            "epub"      : "📚  EPUB",
         }
         for key, label in _pages.items():
             t = "primary" if S.page == key else "secondary"
@@ -1148,6 +1154,7 @@ def main() -> None:
         "stats"     : render_stats,
         "settings"  : render_settings,
         "bible"     : lambda: render_bible(S),
+        "epub"      : lambda: render_epub(S),
     }
     _route.get(S.page, render_translate)()
 

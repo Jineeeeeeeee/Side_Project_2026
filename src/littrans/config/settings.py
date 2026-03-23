@@ -122,6 +122,12 @@ class Settings:
     bible_scan_sleep    : int  = field(default_factory=lambda: _env_int("BIBLE_SCAN_SLEEP", 10))
     bible_scan_depth    : str  = field(default_factory=lambda: _env("BIBLE_SCAN_DEPTH", "standard"))
     bible_cross_ref     : bool = field(default_factory=lambda: _env_bool("BIBLE_CROSS_REF", True))
+    _bible_dir_raw      : str  = field(default_factory=lambda: _env("BIBLE_DIR", "data/bible"))
+
+    # ── EPUB Processor ────────────────────────────────────────────
+    epub_dir_raw        : str  = field(default_factory=lambda: _env("EPUB_DIR",        "epub"))
+    epub_images_dir_raw : str  = field(default_factory=lambda: _env("EPUB_IMAGES_DIR", "epub_images"))
+    epub_temp_dir_raw   : str  = field(default_factory=lambda: _env("EPUB_TEMP_DIR",   "epub_temp"))
 
     # ── Known valid model names (soft validation only) ────────────
     _KNOWN_ANTHROPIC_MODELS = frozenset({
@@ -247,6 +253,30 @@ class Settings:
     @property
     def bible_available(self) -> bool:
         return (self.bible_dir / "meta.json").exists()
+
+    @property
+    def epub_dir(self) -> Path:
+        return Path(self.epub_dir_raw)
+
+    @property
+    def epub_images_dir(self) -> Path:
+        return Path(self.epub_images_dir_raw)
+
+    @property
+    def epub_temp_dir(self) -> Path:
+        return Path(self.epub_temp_dir_raw)
+
+    @property
+    def epub_cut_agent_file(self) -> Path:
+        return self.prompts_dir / "epub_cut_agent.md"
+
+    @property
+    def epub_pattern_learner_file(self) -> Path:
+        return self.prompts_dir / "epub_pattern_learner.md"
+
+    @property
+    def epub_structure_analyst_file(self) -> Path:
+        return self.prompts_dir / "epub_structure_analyst.md"
 
     @property
     def glossary_dir(self) -> Path:

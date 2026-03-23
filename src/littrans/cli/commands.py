@@ -91,18 +91,15 @@ def _apply_novel_and_model(
 
 @app.command()
 def translate(
-    novel   : Optional[str] = typer.Option(None, "--novel", "-n",
-                                help="Tên novel (subfolder trong inputs/). "
-                                     "Bỏ qua nếu chỉ có 1 novel."),
-    provider: Optional[str] = typer.Option(None, "--provider", "-p",
-                                help="Override TRANSLATION_PROVIDER: gemini | anthropic"),
-    model   : Optional[str] = typer.Option(None, "--model", "-m",
-                                help="Override TRANSLATION_MODEL"),
+    book    : Optional[str] = typer.Option(None, "--book", "-b",
+                              help="Tên epub đã xử lý (vd: --book mybook → dịch inputs/mybook/)"),
+    provider: Optional[str] = typer.Option(None, "--provider", "-p"),
+    model   : Optional[str] = typer.Option(None, "--model", "-m"),
 ):
-    """Dịch tất cả chương chưa có bản dịch trong inputs/<novel>/."""
-    _apply_novel_and_model(novel, provider, model)
+    """Dịch tất cả chương chưa có bản dịch."""
+    _apply_model_override(provider, model)
     from littrans.core.pipeline import Pipeline
-    Pipeline().run()
+    Pipeline().run(book=book or "")
 
 
 # ── RETRANSLATE ───────────────────────────────────────────────────
@@ -220,6 +217,63 @@ def clean_characters_cmd(
     from littrans.cli.tool_clean_chars import run_action
     run_action(action.value, name=name, chapter=chapter, chapter2=chapter2, rel=rel)
 
+epub_app = typer.Typer(help="📚 EPUB Processor — bóc tách file .epub thành chapters")
+app.add_typer(epub_app, name="epub")
+
+
+@epub_app.command("process")
+def epub_process(
+    file   : Optional[str] = typer.Argument(None, help="Tên file .epub (trống = xử lý tất cả)"),
+):
+    """Bóc tách .epub → inputs/{tên_epub}/ rồi dịch bằng translate --book {tên_epub}."""
+    _check_epub_deps()
+    from littrans.tools.epub_processor import process_epub, process_all_epubs
+
+    if file:
+        epub_path = settings.epub_dir / file
+        if not epub_path.exists():
+            epub_path = Path(file)
+        if not epub_path.exists():
+            console.print(f"[red]❌ Không tìm thấy: {file}[/red]"); raise typer.Exit(1)
+        console.print(f"\n📖 Xử lý: [cyan]{epub_path.name}[/cyan]")
+        r = process_epub(epub_path)
+        console.print(f"\n[green]✅[/green] {r.chapters_written} chapters → inputs/{r.epub_name}/")
+        console.print(f"   Dịch: [cyan]python scripts/main.py translate --book {r.epub_name}[/cyan]")
+        if r.errors:
+            for e in r.errors: console.print(f"  [red]❌ {e}[/red]")
+    else:
+        results = process_all_epubs()
+        for r in results:
+            console.print(
+                f"\n[green]✅[/green] {r.epub_name}: "
+                f"{r.chapters_written} chapters → inputs/{r.epub_name}/"
+            )
+            console.print(
+                f"   Dịch: [cyan]python scripts/main.py translate --book {r.epub_name}[/cyan]"
+            )
+
+
+@epub_app.command("list")
+def epub_list():
+    """Liệt kê file .epub đang chờ xử lý trong epub/."""
+    files = sorted(settings.epub_dir.glob("*.epub")) if settings.epub_dir.exists() else []
+    if not files:
+        console.print(f"[dim]Không có file .epub nào trong {settings.epub_dir}/[/dim]")
+        return
+    table = Table(title=f"📚 EPUB ({settings.epub_dir}/)", show_header=True)
+    table.add_column("File", style="cyan")
+    table.add_column("Kích thước", justify="right")
+    for ep in files:
+        table.add_row(ep.name, f"{ep.stat().st_size/1_048_576:.1f} MB")
+    console.print(table)
+
+
+def _check_epub_deps():
+    try:
+        import ebooklib; from bs4 import BeautifulSoup
+    except ImportError:
+        console.print("[red]❌ pip install ebooklib beautifulsoup4[/red]")
+        raise typer.Exit(1)
 
 # ── FIX-NAMES ─────────────────────────────────────────────────────
 

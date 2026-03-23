@@ -18,6 +18,8 @@ dependencies = [
 
 [project.optional-dependencies]
 fast = ["pyahocorasick>=2.0"]
+epub = ["ebooklib>=0.18", "beautifulsoup4>=4.12"]
+all  = ["pyahocorasick>=2.0", "ebooklib>=0.18", "beautifulsoup4>=4.12"]
 
 [project.scripts]
 littrans = "littrans.cli:app"

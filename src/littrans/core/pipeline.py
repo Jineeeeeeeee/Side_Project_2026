@@ -110,21 +110,20 @@ class Pipeline:
 
     # ── Public ────────────────────────────────────────────────────
 
-    def run(self) -> None:
-        """Dịch tất cả chương chưa có bản dịch."""
-        # [v5.4] Dùng active_input_dir thay vì input_dir
-        if not settings.active_input_dir.exists():
-            print(f"❌ Không tìm thấy '{settings.active_input_dir}'.")
-            if settings.novel_name:
-                print(f"   Tạo folder: inputs/{settings.novel_name}/")
-            return
+    def run(self, book: str = "") -> None:
+        """Dịch tất cả chương chưa có bản dịch.
+        book: tên subfolder epub (vd: "mybook"). Trống = inputs/ gốc.
+        """
+        scan_dir = settings.input_dir / book if book else settings.input_dir
+        if not scan_dir.exists():
+            print(f"❌ Không tìm thấy '{scan_dir}'."); return
 
-        all_files = self.sorted_inputs()
+        all_files = self.sorted_inputs(book)
         if not all_files:
-            print(f"❌ Không có file nào trong '{settings.active_input_dir}'.")
-            return
+            print(f"❌ Không có file nào trong '{scan_dir}'."); return
 
-        pending = self._get_pending(all_files)
+        pending = self._get_pending(all_files, book)
+
         self._print_banner(all_files, pending)
 
         if not pending:
@@ -455,28 +454,35 @@ class Pipeline:
 
     # ── Helpers ───────────────────────────────────────────────────
 
-    def sorted_inputs(self) -> list[str]:
-        """[v5.4] Scan active_input_dir thay vì input_dir."""
-        dir_ = settings.active_input_dir
-        if not dir_.exists():
+    def sorted_inputs(self, book: str = "") -> list[str]:
+        """
+        book: tên subfolder (epub name). Nếu trống → scan input_dir trực tiếp.
+        Trả về list tên file tương đối (vd: "chapter_0001.txt" hoặc "chapter_001.txt").
+        """
+        scan_dir = settings.input_dir / book if book else settings.input_dir
+        if not scan_dir.exists():
             return []
-        files = [f for f in os.listdir(str(dir_)) if f.endswith((".txt", ".md"))]
+        files = [f for f in os.listdir(str(scan_dir)) if f.endswith((".txt", ".md"))]
         return sorted(files, key=lambda s: [
             int(t) if t.isdigit() else t.lower()
             for t in re.split(r"(\d+)", s)
         ])
 
-    def _get_pending(self, all_files: list[str]) -> list[tuple]:
-        """[v5.4] Dùng active_input_dir và active_output_dir."""
-        pending = []
+
+    def _get_pending(self, all_files: list[str], book: str = "") -> list[tuple]:
+        pending  = []
+        in_dir   = settings.input_dir / book if book else settings.input_dir
+        out_base = settings.output_dir / book if book else settings.output_dir
+        out_base.mkdir(parents=True, exist_ok=True)
         for i, fn in enumerate(all_files):
             base, _ = os.path.splitext(fn)
-            out = str(settings.active_output_dir / f"{base}_VN.txt")
+            out = str(out_base / f"{base}_VN.txt")
             if os.path.exists(out):
                 print(f"⏭️  Bỏ qua (đã dịch): {fn}")
             else:
-                pending.append((i, fn, str(settings.active_input_dir / fn), out))
+                pending.append((i, fn, str(in_dir / fn), out))
         return pending
+
 
     def _retry_passes(self, failed: list) -> list:
         for retry_num in range(1, settings.retry_failed_passes + 1):

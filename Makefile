@@ -1,14 +1,15 @@
 .PHONY: init build rebuild ui ui-d stop logs shell \
         translate retranslate stats \
         clean-glossary merge-chars fix-names \
-        validate-chars export-chars
+        validate-chars export-chars \
+        epub epub-one translate-book
 
 # ── Setup ─────────────────────────────────────────────────────────
 
 ## Tạo thư mục cần thiết và file .env từ template (chỉ chạy lần đầu)
 init:
 	mkdir -p inputs outputs logs data/glossary data/characters \
-	         data/skills data/memory prompts
+	         data/skills data/memory prompts epub
 	@if [ ! -f .env ]; then \
 	    cp .env.example .env && \
 	    echo "✅ .env tạo từ .env.example"; \
@@ -89,3 +90,25 @@ export-chars:
 ## Mở shell trong container (debug)
 shell:
 	docker compose run --rm cli bash
+
+# ── EPUB Processor ────────────────────────────────────────────────
+
+## Xử lý tất cả .epub trong epub/
+epub:
+	docker compose run --rm cli python main.py epub process
+
+## Xử lý 1 file: make EPUB=mybook.epub epub-one
+epub-one:
+	@if [ -z "$(EPUB)" ]; then \
+	    echo "❌ Thiếu EPUB. Dùng: make EPUB=mybook.epub epub-one"; \
+	    exit 1; \
+	fi
+	docker compose run --rm cli python main.py epub process $(EPUB)
+
+## Dịch 1 sách epub đã xử lý: make BOOK=mybook translate-book
+translate-book:
+	@if [ -z "$(BOOK)" ]; then \
+	    echo "❌ Thiếu BOOK. Dùng: make BOOK=mybook translate-book"; \
+	    exit 1; \
+	fi
+	docker compose run --rm cli python main.py translate --book $(BOOK)
