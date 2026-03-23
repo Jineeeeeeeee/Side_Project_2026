@@ -36,6 +36,8 @@ import re
 import logging
 from dataclasses import dataclass, field
 
+from littrans.core.patterns import word_boundary_count
+
 SOFT_LIMIT_RATIO = 0.80
 
 _CHARS_PER_TOKEN = {"vn": 3.0, "en": 4.0, "json": 3.5}
@@ -65,12 +67,7 @@ def _score_character_relevance(name: str, profile: str, chapter_text_lower: str)
 
     Điểm = số lần xuất hiện có word-boundary + bonus 100 nếu không phải Archive.
     """
-    try:
-        pattern = rf"(?<![^\W_]){re.escape(name.lower())}(?![^\W_])"
-        count   = len(re.findall(pattern, chapter_text_lower, re.IGNORECASE | re.UNICODE))
-    except re.error:
-        # Fallback an toàn nếu tên chứa ký tự đặc biệt gây lỗi regex
-        count = chapter_text_lower.count(name.lower())
+    count = word_boundary_count(name.lower(), chapter_text_lower)
 
     archive_penalty = 0 if "[ARCHIVE]" not in profile else -50
     return count + 100 + archive_penalty  # +100 để chars non-archive luôn > 0

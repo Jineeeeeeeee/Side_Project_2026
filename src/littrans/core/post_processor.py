@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import re
 
+from littrans.core.patterns import BOX_BORDER_RE as _BOX_BORDER_RE, BOX_CONTENT_RE as _BOX_CONTENT_RE
+
 
 # ── Patterns compile sẵn ─────────────────────────────────────────
 
@@ -59,25 +61,11 @@ _ELLIPSIS_SPACE = re.compile(r"\. \. \.")          # ". . ." → …
 _DOUBLE_DASH = re.compile(r"(?<!\-)\-\-(?!\-)")   # -- nhưng không phải ---
 
 # Pass 7: typographic quotes — chỉ với văn bản tiếng Việt
-# Chuyển "..." → "..." (dấu ngoặc kép thẳng → cong)
-# Chỉ làm nếu văn bản chưa có typographic quotes
 _STRAIGHT_QUOTE_OPEN  = re.compile(r'(?<!\w)"(?=\S)')
 _STRAIGHT_QUOTE_CLOSE = re.compile(r'(?<=\S)"(?!\w)')
 
 # Pass 8: khoảng trắng trước dấu chấm câu
 _SPACE_BEFORE_PUNCT = re.compile(r" +([,\.!?:;…])")
-
-# Pass 9: system box detection (tái sử dụng logic từ quality_guard)
-_BOX_BORDER_RE = re.compile(
-    r"[─═━╔╗╚╝╠╣╦╩╬│┌┐└┘■▸◆►●▓▒░]"
-    r"|^\s*[-=*~]{5,}\s*$",
-    re.MULTILINE,
-)
-_BOX_CONTENT_RE = re.compile(
-    r"^\s*(\[.+\]|ding!?|level up|thăng cấp|cấp độ|chỉ số|kỹ năng"
-    r"|hp:|mp:|exp:|xp:|str:|agi:|int:|vit:|luk:|cd:|phát hiện|hệ thống)",
-    re.IGNORECASE,
-)
 
 # Pass 10: thoại dính dòng
 # Phát hiện: dòng kết thúc bằng dấu thoại đóng, liền sau là thoại mở

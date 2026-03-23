@@ -197,8 +197,8 @@ def _load_window(window_files: list[str]) -> list[tuple[str, str]]:
     result = []
     for fn in window_files:
         base, _ = os.path.splitext(fn)
-        vn_path = str(settings.output_dir / f"{base}_VN.txt")
-        en_path = str(settings.input_dir  / fn)
+        vn_path = str(settings.active_output_dir / f"{base}_VN.txt")
+        en_path = str(settings.active_input_dir  / fn)
         for path, label_suffix in [(vn_path, "[VN]"), (en_path, "[EN]")]:
             text = load_text(path)
             if text.strip():

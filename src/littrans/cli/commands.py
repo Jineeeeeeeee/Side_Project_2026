@@ -93,11 +93,13 @@ def _apply_novel_and_model(
 def translate(
     book    : Optional[str] = typer.Option(None, "--book", "-b",
                               help="Tên epub đã xử lý (vd: --book mybook → dịch inputs/mybook/)"),
+    novel   : Optional[str] = typer.Option(None, "--novel", "-n",
+                              help="Tên novel"),
     provider: Optional[str] = typer.Option(None, "--provider", "-p"),
     model   : Optional[str] = typer.Option(None, "--model", "-m"),
 ):
     """Dịch tất cả chương chưa có bản dịch."""
-    _apply_model_override(provider, model)
+    _apply_novel_and_model(novel, provider, model)
     from littrans.core.pipeline import Pipeline
     Pipeline().run(book=book or "")
 
@@ -169,10 +171,6 @@ def list_novels():
 
 
 # ── CLEAN GLOSSARY ────────────────────────────────────────────────
-
-@app.command()
-def clean_glossary_cmd():
-    pass  # registered below via clean_app
 
 @clean_app.command("glossary")
 def clean_glossary_cmd(

@@ -9,6 +9,7 @@ import re
 
 from littrans.config.settings import settings
 from littrans.context.base import BaseManager
+from littrans.core.patterns import word_boundary_search
 
 
 class SkillsManager(BaseManager):
@@ -31,8 +32,8 @@ class SkillsManager(BaseManager):
             vn      = rec.get("vietnamese", "")
             vn_bare = vn.strip("[]")
             if (
-                (eng and re.search(rf"\b{re.escape(eng)}\b", chapter_text, re.IGNORECASE))
-                or (vn_bare and re.search(rf"\b{re.escape(vn_bare)}\b", chapter_text, re.IGNORECASE))
+                (eng and word_boundary_search(eng, chapter_text))
+                or (vn_bare and word_boundary_search(vn_bare, chapter_text))
             ):
                 result[eng] = rec
         return result

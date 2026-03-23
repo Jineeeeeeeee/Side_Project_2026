@@ -16,26 +16,14 @@ from __future__ import annotations
 
 import re
 
+from littrans.core.patterns import BOX_BORDER_RE as _BOX_BORDER_RE, BOX_CONTENT_RE as _BOX_CONTENT_RE
+
 MIN_TRANSLATION_LINES  = 10
 MAX_LINE_LENGTH        = 1000
 MAX_MERGED_LINE_RATIO  = 0.50
 MIN_BLANK_LINE_RATIO   = 0.20
 MIN_CHAR_RATIO         = 0.45
 MAX_UNTRANSLATED_RATIO = 0.15
-
-# Ký tự/chuỗi nhận diện system box
-_BOX_BORDER_RE = re.compile(
-    r"[─═━╔╗╚╝╠╣╦╩╬│┌┐└┘■▸◆►●▓▒░]"
-    r"|^\s*[-=*~]{3,}\s*$",
-    re.MULTILINE,
-)
-
-# Keyword thường xuất hiện TRONG box
-_BOX_CONTENT_RE = re.compile(
-    r"^\s*(\[.+\]|ding!?|level up|thăng cấp|cấp độ|chỉ số|kỹ năng"
-    r"|hp:|mp:|exp:|xp:|str:|agi:|int:|vit:|luk:|cd:|phát hiện|hệ thống)",
-    re.IGNORECASE,
-)
 
 
 # ── System box checker ────────────────────────────────────────────

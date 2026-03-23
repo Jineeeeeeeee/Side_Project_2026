@@ -18,27 +18,24 @@ from __future__ import annotations
 
 import re
 
-
-# ── Patterns ──────────────────────────────────────────────────────
-
-# Ký tự đặc trưng của system box
-_BOX_CHARS_RE = re.compile(
-    r"[─═━┄┈╌╍■□▪▫▸◆◇►●○•│┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬▓▒░✦✧✫✬]"
+from littrans.core.patterns import (
+    BOX_CHARS_RE as _BOX_CHARS_RE,
+    RULE_LINE_RE as _RULE_LINE_RE,
+    BOX_KEYWORD_RE as _BOX_KEYWORD_RE,
 )
 
-# Dòng kẻ ASCII (---, ===, ***,  ~~~, ...)
-_RULE_LINE_RE = re.compile(r"^\s*[-=*~_+|]{3,}\s*$")
+
+# ── Patterns ──────────────────────────────────────────────────────
 
 # Heading Markdown
 _HEADING_RE = re.compile(r"^#{1,6}\s")
 
 # Dòng thoại mở đầu bằng dấu ngoặc kép các loại
-_DIALOGUE_OPEN_RE = re.compile(r'^[\"\u201c\u2018\u300c\u300e\u3010\u00ab\u2039]')
+_DIALOGUE_OPEN_RE = re.compile(r'^["\u201c\u2018\u300c\u300e\u3010\u00ab\u2039]')
 
 # Kết thúc câu hoàn chỉnh
-# Bao gồm: . ! ? … " ' ] ) ; — : , và closing quotes
 _COMPLETE_END_RE = re.compile(
-    r'[.!?\u2026\"\u201d\u2019\u300d\u300f\u3011\u3015\u00bb\u203a:;\-\u2014\])]$'
+    r'[.!?\u2026"\u201d\u2019\u300d\u300f\u3011\u3015\u00bb\u203a:;\-\u2014\])]$'
 )
 
 # 3+ dòng trống liên tiếp
@@ -46,14 +43,6 @@ _MULTI_BLANK_RE = re.compile(r"\n{3,}")
 
 # Trailing whitespace per line
 _TRAILING_WS_RE = re.compile(r"[ \t]+$", re.MULTILINE)
-
-# Keyword system box thường gặp trong LitRPG
-_BOX_KEYWORD_RE = re.compile(
-    r"^\s*(ding!?|level up!?|you have|congratulations|quest|system notification"
-    r"|skill learned|achievement|status window|class:|race:|title:|hp:|mp:|xp:|exp:"
-    r"|\[.+\]$)",
-    re.IGNORECASE,
-)
 
 # Dấu mở của system box (dùng để detect bắt đầu một box)
 _BOX_OPEN_CHARS = {"─", "═", "━", "╔", "┌", "╠", "║", "│", "▓", "▒"}

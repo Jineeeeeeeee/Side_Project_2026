@@ -112,9 +112,9 @@ class Pipeline:
 
     def run(self, book: str = "") -> None:
         """Dịch tất cả chương chưa có bản dịch.
-        book: tên subfolder epub (vd: "mybook"). Trống = inputs/ gốc.
+        book: tên subfolder epub (vd: "mybook"). Trống = active_input_dir.
         """
-        scan_dir = settings.input_dir / book if book else settings.input_dir
+        scan_dir = settings.input_dir / book if book else settings.active_input_dir
         if not scan_dir.exists():
             print(f"❌ Không tìm thấy '{scan_dir}'."); return
 
@@ -456,10 +456,10 @@ class Pipeline:
 
     def sorted_inputs(self, book: str = "") -> list[str]:
         """
-        book: tên subfolder (epub name). Nếu trống → scan input_dir trực tiếp.
+        book: tên subfolder (epub name). Nếu trống → scan active_input_dir.
         Trả về list tên file tương đối (vd: "chapter_0001.txt" hoặc "chapter_001.txt").
         """
-        scan_dir = settings.input_dir / book if book else settings.input_dir
+        scan_dir = settings.input_dir / book if book else settings.active_input_dir
         if not scan_dir.exists():
             return []
         files = [f for f in os.listdir(str(scan_dir)) if f.endswith((".txt", ".md"))]
@@ -471,8 +471,8 @@ class Pipeline:
 
     def _get_pending(self, all_files: list[str], book: str = "") -> list[tuple]:
         pending  = []
-        in_dir   = settings.input_dir / book if book else settings.input_dir
-        out_base = settings.output_dir / book if book else settings.output_dir
+        in_dir   = settings.input_dir / book if book else settings.active_input_dir
+        out_base = settings.output_dir / book if book else settings.active_output_dir
         out_base.mkdir(parents=True, exist_ok=True)
         for i, fn in enumerate(all_files):
             base, _ = os.path.splitext(fn)
@@ -523,20 +523,18 @@ class Pipeline:
                 print(f"\n💡 Có {n_staging} nhân vật mới. Chạy: python scripts/main.py clean characters --action merge")
 
     def _wait(self, exc: Exception, attempt: int) -> None:
-        import time as _time
         if is_rate_limit(exc):
             print(f"  ⚠️  Rate limit → chờ {settings.rate_limit_sleep}s...")
-            _time.sleep(settings.rate_limit_sleep)
+            time.sleep(settings.rate_limit_sleep)
         else:
             delay = min(10 * (2 ** (attempt - 1)), 120)
             print(f"  ⏳ Backoff {delay}s...")
-            _time.sleep(delay)
+            time.sleep(delay)
 
     def _wait_quality(self, attempt: int) -> None:
-        import time as _time
         delay = min(5 * attempt, 30)
         print(f"  ⏳ Chờ {delay}s trước khi retry...")
-        _time.sleep(delay)
+        time.sleep(delay)
 
     def _record_violations(self, violations, name_lock, filename) -> None:
         from littrans.utils.io_utils import load_json, save_json as _save

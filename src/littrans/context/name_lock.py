@@ -23,6 +23,7 @@ import logging
 
 from littrans.config.settings import settings
 from littrans.utils.io_utils import load_json, load_text
+from littrans.core.patterns import word_boundary_pattern
 
 
 # ── Build table ───────────────────────────────────────────────────
@@ -128,7 +129,7 @@ def validate_translation(translation: str, table: dict[str, str]) -> list[str]:
         if len(eng) < MIN_LEN:
             continue
         try:
-            pattern = rf"(?<![^\W_]){re.escape(eng)}(?![^\W_])"
+            pattern = word_boundary_pattern(eng)
             if re.search(pattern, translation, re.IGNORECASE | re.UNICODE):
                 warnings.append(f"  ⚠️  Tên gốc '{eng}' còn sót → phải dùng '{vn}'")
         except re.error:

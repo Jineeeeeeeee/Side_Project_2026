@@ -151,7 +151,7 @@ def _refresh_context_notes(all_files: list[str], current_index: int) -> None:
     texts = [
         (fn, content[:6000])
         for fn in window
-        if (content := load_text(str(settings.input_dir / fn))).strip()
+        if (content := load_text(str(settings.active_input_dir / fn))).strip()
     ]
     if not texts:
         _write_empty_note("Không đọc được nội dung chương.")
@@ -199,8 +199,8 @@ def _update_emotional_states(all_files: list[str], current_index: int) -> None:
     texts = []
     for fn in window[-5:]:
         base, _ = os.path.splitext(fn)
-        vn_path = str(settings.output_dir / f"{base}_VN.txt")
-        en_path = str(settings.input_dir  / fn)
+        vn_path = str(settings.active_output_dir / f"{base}_VN.txt")
+        en_path = str(settings.active_input_dir  / fn)
         for path in [vn_path, en_path]:
             text = load_text(path)
             if text.strip():
@@ -303,7 +303,7 @@ def _suggest_new_terms(all_files: list[str], current_index: int) -> None:
 
     texts = []
     for fn in window[-5:]:
-        text = load_text(str(settings.input_dir / fn))
+        text = load_text(str(settings.active_input_dir / fn))
         if text.strip():
             texts.append((fn, text[:5000]))
 

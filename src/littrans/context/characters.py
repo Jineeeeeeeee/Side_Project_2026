@@ -33,6 +33,7 @@ from copy import deepcopy
 
 from littrans.config.settings import settings
 from littrans.utils.io_utils import load_json, save_json
+from littrans.core.patterns import word_boundary_search
 from littrans.llm.schemas import (
     CharacterDetail, RelationshipUpdate,
     EPS_LABELS, EPS_BAR,
@@ -118,16 +119,8 @@ def _matches(name: str, profile: dict, text: str) -> bool:
     for n in candidates:
         if not n:
             continue
-        try:
-            if re.search(
-                rf"(?<![^\W_]){re.escape(n)}(?![^\W_])",
-                text,
-                re.IGNORECASE | re.UNICODE,
-            ):
-                return True
-        except re.error:
-            if n.lower() in text.lower():
-                return True
+        if word_boundary_search(n, text):
+            return True
     return False
 
 
@@ -246,16 +239,7 @@ def _fmt(name: str, p: dict, text: str, mc_name: str, archived: bool = False) ->
 
 
 def _name_in_text(name: str, text: str) -> bool:
-    if not name:
-        return False
-    try:
-        return bool(re.search(
-            rf"(?<![^\W_]){re.escape(name)}(?![^\W_])",
-            text,
-            re.IGNORECASE | re.UNICODE,
-        ))
-    except re.error:
-        return name.lower() in text.lower()
+    return word_boundary_search(name, text)
 
 
 def _fmt_rel(other: str, r: dict) -> list[str]:
