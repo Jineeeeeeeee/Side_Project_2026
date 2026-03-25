@@ -2,6 +2,8 @@
 src/littrans/core/prompt_builder.py — Xây dựng system prompt.
 
 [Refactor] engine → core, managers → context.
+[v5.5] DEAD-2 fix: xoá build() (1-call flow cũ, không còn caller).
+       Chỉ giữ build_translation_prompt() dùng bởi pipeline.py.
 """
 from __future__ import annotations
 
@@ -19,47 +21,6 @@ _CAT_LABELS = {
     "general"      : "Thuật ngữ chung",
     "staging"      : "Thuật ngữ mới (chưa phân loại)",
 }
-
-
-# ═══════════════════════════════════════════════════════════════════
-# PUBLIC — Flow cũ (1 call) — giữ lại cho backward compat với tools
-# ═══════════════════════════════════════════════════════════════════
-
-def build(
-    instructions     : str,
-    glossary_ctx     : dict[str, list[str]],
-    char_profiles    : dict[str, str],
-    char_instructions: str,
-    arc_memory_text  : str = "",
-    context_notes    : str = "",
-    name_lock_table  : dict[str, str] | None = None,
-    known_skills     : dict[str, dict] | None = None,
-    budget_limit     : int = 0,
-    chapter_text     : str = "",
-) -> str:
-    glossary_ctx, char_profiles, arc_memory_text = _apply_budget_if_needed(
-        budget_limit, instructions, char_instructions, name_lock_table or {},
-        context_notes, arc_memory_text, char_profiles, glossary_ctx, chapter_text,
-    )
-
-    parts = [
-        "Bạn là AI Agent chuyên dịch truyện LitRPG / Tu Tiên từ tiếng Anh sang tiếng Việt.\n",
-        _section("PHẦN 1 — HƯỚNG DẪN DỊCH", instructions),
-        _section("PHẦN 2 — TỪ ĐIỂN THUẬT NGỮ", _fmt_glossary(glossary_ctx, known_skills or {})),
-        _section("PHẦN 3 — PROFILE NHÂN VẬT",   _fmt_characters(char_profiles)),
-        _section("PHẦN 4 — HƯỚNG DẪN LẬP PROFILE", char_instructions),
-        _section("PHẦN 5 — YÊU CẦU ĐẦU RA JSON",  _json_requirements()),
-    ]
-
-    parts += _arc_and_notes_sections(arc_memory_text, context_notes)
-
-    from littrans.context.name_lock import format_for_prompt as fmt_lock
-    parts.append(_section(
-        "PHẦN 8 — NAME LOCK TABLE (bảng tên đã chốt — BẮT BUỘC tuân theo)",
-        fmt_lock(name_lock_table or {}),
-    ))
-
-    return "\n\n".join(parts)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -203,23 +164,6 @@ def _fmt_characters(profiles: dict[str, str]) -> str:
         "  EPS 5 (INTIMATE) → ngôn ngữ riêng tư, thân mật tuyệt đối\n"
     )
     return header + "\n" + "\n\n---\n\n".join(profiles.values())
-
-
-def _json_requirements() -> str:
-    return (
-        "Trả về JSON với ĐÚNG 5 trường sau. KHÔNG bỏ sót trường nào:\n\n"
-        "1. `translation`\n"
-        "   Bản dịch hoàn chỉnh, giữ nguyên Markdown gốc.\n\n"
-        "2. `new_terms`\n"
-        "   Thuật ngữ MỚI chưa có trong Glossary (kể cả tên GIỮ NGUYÊN tiếng Anh).\n"
-        "   Phải có trường `category`. Nếu không có → [].\n\n"
-        "3. `new_characters`\n"
-        "   Nhân vật CÓ TÊN xuất hiện LẦN ĐẦU. Điền đầy đủ profile. Nếu không có → [].\n\n"
-        "4. `relationship_updates`\n"
-        "   Thay đổi quan hệ THỰC SỰ quan trọng. Chỉ điền field thực sự thay đổi. Nếu không có → [].\n\n"
-        "5. `skill_updates`\n"
-        "   Kỹ năng MỚI hoặc TIẾN HÓA lần đầu. Kỹ năng đã có → KHÔNG báo cáo lại. Nếu không có → []."
-    )
 
 
 def _translation_output_requirements() -> str:

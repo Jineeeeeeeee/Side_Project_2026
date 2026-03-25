@@ -11,6 +11,7 @@ Chỉnh qua .env, KHÔNG sửa file này.
 [v5.4] Multi-novel: novel_name + active_input_dir + active_output_dir + novel_data_dir.
        Mỗi novel có data riêng lưu trong outputs/<novel_name>/data/.
        Backward compat: novel_name="" → dùng paths cũ (flat structure).
+[v5.5] BUG-5 fix: xoá field log_dir dead (bị shadow hoàn toàn bởi property cùng tên).
 """
 from __future__ import annotations
 
@@ -108,7 +109,7 @@ class Settings:
     input_dir    : Path = field(default_factory=lambda: Path(_env("INPUT_DIR",   "inputs")))
     output_dir   : Path = field(default_factory=lambda: Path(_env("OUTPUT_DIR",  "outputs")))
     data_dir     : Path = field(default_factory=lambda: Path(_env("DATA_DIR",    "data")))
-    log_dir      : Path = field(default_factory=lambda: Path(_env("LOG_DIR",     "logs")))
+    # NOTE: log_dir không có field — xem property log_dir bên dưới
     prompts_dir  : Path = field(default_factory=lambda: Path(_env("PROMPTS_DIR", "prompts")))
 
     # ── Multi-novel ───────────────────────────────────────────────
