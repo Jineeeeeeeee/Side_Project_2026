@@ -9,12 +9,7 @@ src/littrans/ui/bible_ui.py — Bible System UI components cho Streamlit.
   🔍 Consistency — health score, issues, run validate
   ⬇️ Export      — format selector, download
 
-Tái dụng từ app.py:
-  _poll()           — drain queue
-  _show_log()       — display log
-  run_background()  — background thread
-
-[v1.0] Initial implementation — Bible System Sprint 6
+[FIX] Sửa toàn bộ import path: littrans.bible.* → littrans.context.*
 """
 from __future__ import annotations
 
@@ -27,7 +22,7 @@ from typing import Any
 def _get_store():
     """Lazy-load BibleStore với settings hiện tại."""
     from littrans.config.settings import settings
-    from littrans.bible.bible_store import BibleStore
+    from littrans.context.bible_store import BibleStore
     return BibleStore(settings.bible_dir)
 
 
@@ -44,7 +39,6 @@ def _bible_available() -> bool:
 # ═══════════════════════════════════════════════════════════════════
 
 def _get_bible_stats(ttl: int = 5):
-    """Load Bible stats với simple TTL."""
     import streamlit as st
     @st.cache_data(ttl=ttl)
     def _load():
@@ -60,15 +54,10 @@ def _get_bible_stats(ttl: int = 5):
 # ═══════════════════════════════════════════════════════════════════
 
 def render_bible_tab(S: Any) -> None:
-    """
-    Entry point — render toàn bộ tab Bible.
-    S = st.session_state (được pass vào để tránh circular import).
-    """
     import streamlit as st
 
     st.subheader("📖 Bible System")
 
-    # Session state keys cho Bible
     for key, default in [
         ("bible_scan_running", False),
         ("bible_scan_q",       None),
@@ -126,7 +115,6 @@ def _render_bible_empty(S: Any) -> None:
         index=1, key="bible_init_depth",
         help="quick: nhanh · standard: đầy đủ · deep: kỹ nhất",
     )
-
     _render_scan_controls(S, depth, force=False, label="▶ Bắt đầu Scan")
 
 
@@ -147,13 +135,11 @@ def _render_overview(S: Any) -> None:
         st.error(f"Lỗi load Bible stats: {e}")
         return
 
-    # Progress
     total   = max(1, progress.get("total", 1))
     scanned = progress.get("scanned", 0)
     pct     = scanned / total
     st.progress(pct, text=f"Scanned: {scanned}/{total} ({int(pct*100)}%)")
 
-    # Metrics row
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Nhân vật",  by_type.get("character", 0))
     m2.metric("Kỹ năng",   by_type.get("skill", 0))
@@ -171,7 +157,6 @@ def _render_overview(S: Any) -> None:
 
     st.divider()
 
-    # Scan controls
     st.markdown("### Scan")
     col1, col2, col3, col4 = st.columns(4)
     depth    = col1.selectbox("Depth", ["quick", "standard", "deep"], index=1, key="ov_depth")
@@ -183,13 +168,11 @@ def _render_overview(S: Any) -> None:
                           new_only=new_only, label="▶ Scan",
                           col=col4)
 
-    # Pending staging
     if staging > 0:
         st.warning(f"⚠️  {staging} staging files chờ consolidation.")
         if st.button("🔄 Consolidate ngay", key="ov_consolidate"):
             _run_consolidation()
 
-    # Scan log
     if S.bible_scan_running or S.bible_scan_logs:
         _handle_scan_log(S)
 
@@ -234,8 +217,8 @@ def _launch_bible_scan(log_queue: queue.Queue, depth: str,
         try:
             from littrans.config.settings import settings
             object.__setattr__(settings, "bible_scan_depth", depth)
-            from littrans.bible.bible_scanner import BibleScanner
-            from littrans.bible.bible_store import BibleStore
+            from littrans.context.bible_scanner import BibleScanner   # FIX
+            from littrans.context.bible_store   import BibleStore      # FIX
             store   = BibleStore(settings.bible_dir)
             scanner = BibleScanner(store)
             if new_only:
@@ -273,7 +256,6 @@ def _handle_scan_log(S: Any) -> None:
             S.bible_scan_running = False
             S.bible_scan_logs.append("─" * 56)
             S.bible_scan_logs.append("✅ Scan hoàn tất.")
-            import streamlit as st
             st.cache_data.clear()
 
     if S.bible_scan_logs:
@@ -288,8 +270,8 @@ def _handle_scan_log(S: Any) -> None:
 def _run_consolidation() -> None:
     import streamlit as st
     try:
-        from littrans.bible.bible_store import BibleStore
-        from littrans.bible.bible_consolidator import BibleConsolidator
+        from littrans.context.bible_store        import BibleStore         # FIX
+        from littrans.context.bible_consolidator import BibleConsolidator  # FIX
         from littrans.config.settings import settings
         store   = BibleStore(settings.bible_dir)
         staging = store.load_all_staging()
@@ -318,7 +300,6 @@ def _render_database(S: Any) -> None:
     except Exception as e:
         st.error(f"Load lỗi: {e}"); return
 
-    # Toolbar
     c1, c2, c3 = st.columns([3, 2, 1])
     search = c1.text_input("🔍 Tìm entity", placeholder="Tên nhân vật, địa danh...",
                             label_visibility="collapsed", key="db_search")
@@ -329,7 +310,6 @@ def _render_database(S: Any) -> None:
     if c3.button("↺", key="db_refresh"):
         st.cache_data.clear(); st.rerun()
 
-    # Load entities
     all_entities: list[dict] = []
     types_to_load = (
         ["character", "skill", "location", "item", "faction", "concept"]
@@ -339,7 +319,6 @@ def _render_database(S: Any) -> None:
         for e in store.get_all_entities(t):
             all_entities.append(e)
 
-    # Filter by search
     if search:
         sl = search.lower()
         all_entities = [
@@ -355,7 +334,6 @@ def _render_database(S: Any) -> None:
         st.info("Không tìm thấy entity nào.")
         return
 
-    # Show as cards (3 per row)
     cols = st.columns(3)
     for i, e in enumerate(all_entities[:60]):
         with cols[i % 3]:
@@ -372,12 +350,12 @@ def _entity_card(e: dict) -> None:
     desc   = (e.get("description") or e.get("personality_summary") or "")[:80]
 
     TYPE_COLORS = {
-        "character": ("#E1F5EE", "#085041"),
-        "skill"    : ("#FAEEDA", "#633806"),
-        "location" : ("#EEEDFE", "#3C3489"),
-        "item"     : ("#E6F1FB", "#0C447C"),
-        "faction"  : ("#FCEBEB", "#791F1F"),
-        "concept"  : ("#EAF3DE", "#3B6D11"),
+        "character": ("#E1F5EE","#085041"),
+        "skill"    : ("#FAEEDA","#633806"),
+        "location" : ("#EEEDFE","#3C3489"),
+        "item"     : ("#E6F1FB","#0C447C"),
+        "faction"  : ("#FCEBEB","#791F1F"),
+        "concept"  : ("#EAF3DE","#3B6D11"),
     }
     bg, fg = TYPE_COLORS.get(etype, ("#F1EFE8", "#444441"))
 
@@ -394,7 +372,6 @@ def _entity_card(e: dict) -> None:
         if desc:
             st.caption(desc)
 
-        # Type-specific info
         if etype == "character":
             realm = (e.get("cultivation") or {}).get("realm", "")
             st.caption(
@@ -423,7 +400,6 @@ def _render_worldbuilding(S: Any) -> None:
     except Exception as e:
         st.error(f"Load lỗi: {e}"); return
 
-    # Cultivation Systems
     if wb.cultivation_systems:
         st.markdown("### ⬆️ Cultivation Systems")
         for cs in wb.cultivation_systems:
@@ -442,7 +418,6 @@ def _render_worldbuilding(S: Any) -> None:
     else:
         st.info("Chưa có cultivation system nào được scan.")
 
-    # Rules
     st.markdown("### 📋 Confirmed Rules")
     if wb.confirmed_rules:
         for rule in wb.confirmed_rules:
@@ -457,7 +432,6 @@ def _render_worldbuilding(S: Any) -> None:
     else:
         st.info("Chưa có rules nào được confirm.")
 
-    # History / Economy / Cosmology notes
     for title, notes in [
         ("📜 History", wb.history_notes),
         ("💰 Economy", wb.economy_notes),
@@ -484,7 +458,6 @@ def _render_main_lore(S: Any) -> None:
 
     lore_tabs = st.tabs(["📖 Summaries", "🧵 Plot Threads", "💡 Revelations"])
 
-    # Summaries
     with lore_tabs[0]:
         summaries = lore.chapter_summaries
         st.caption(f"{len(summaries)} chapters với summary")
@@ -497,7 +470,7 @@ def _render_main_lore(S: Any) -> None:
                 or search.lower() in s.chapter.lower()
             ]
 
-        for s in reversed(summaries[-30:]):   # 30 gần nhất, mới nhất trước
+        for s in reversed(summaries[-30:]):
             tone_color = {
                 "action"    : "🔴",
                 "drama"     : "💜",
@@ -513,7 +486,6 @@ def _render_main_lore(S: Any) -> None:
                     for ev in s.key_events:
                         st.markdown(f"  - {ev}")
 
-    # Plot Threads
     with lore_tabs[1]:
         open_t   = lore.plot_threads and [t for t in lore.plot_threads if t.status == "open"]
         closed_t = lore.plot_threads and [t for t in lore.plot_threads if t.status == "closed"]
@@ -536,7 +508,6 @@ def _render_main_lore(S: Any) -> None:
                     if t.resolution:
                         st.write(t.resolution[:150])
 
-    # Revelations
     with lore_tabs[2]:
         revs = lore.revelations
         st.caption(f"{len(revs)} revelations")
@@ -576,7 +547,6 @@ def _render_consistency(S: Any) -> None:
         _handle_crossref_log(S)
         return
 
-    # Hiển thị cross_ref_last_run từ meta
     try:
         store = _get_store()
         meta  = store.load_meta()
@@ -607,8 +577,8 @@ def _launch_crossref(log_queue: queue.Queue) -> None:
 
         sys.stdout = _Cap()
         try:
-            from littrans.bible.cross_reference import CrossReferenceEngine
-            from littrans.bible.bible_exporter import BibleExporter
+            from littrans.context.cross_reference import CrossReferenceEngine  # FIX
+            from littrans.context.bible_exporter  import BibleExporter          # FIX
             store   = _get_store()
             report  = CrossReferenceEngine(store).run()
             log_queue.put(f"📊 Health: {report.health_score:.0%} · {report.total_issues} issues")
@@ -617,8 +587,6 @@ def _launch_crossref(log_queue: queue.Queue) -> None:
                 log_queue.put(f"   🔴 [{issue.issue_type}] {issue.description}")
             for issue in report.warnings[:3]:
                 log_queue.put(f"   🟡 [{issue.issue_type}] {issue.description}")
-            # Save report
-            from pathlib import Path
             out = Path("Reports") / "bible_consistency.md"
             BibleExporter(store).export_consistency_report(out, report)
             log_queue.put(f"📄 Báo cáo: {out}")
@@ -665,9 +633,9 @@ def _handle_crossref_log(S: Any) -> None:
 
 def _render_export(S: Any) -> None:
     import streamlit as st
- 
+
     st.markdown("### ⬇️ Export Bible")
- 
+
     fmt   = st.selectbox(
         "Định dạng",
         ["markdown", "json", "timeline", "characters", "consistency"],
@@ -680,12 +648,11 @@ def _render_export(S: Any) -> None:
         key="exp_scope",
         disabled=(fmt != "markdown"),
     )
- 
+
     col_btn, col_status = st.columns([1, 3])
     if col_btn.button("🔄 Tạo export", type="primary", key="exp_run"):
         try:
-            from littrans.bible.bible_exporter import BibleExporter
-            from pathlib import Path
+            from littrans.context.bible_exporter import BibleExporter  # FIX
             out_dir = Path("Reports")
             store   = _get_store()
             exp     = BibleExporter(store)
@@ -697,7 +664,7 @@ def _render_export(S: Any) -> None:
                 "consistency": "bible_consistency.md",
             }
             out = out_dir / fname_map[fmt]
- 
+
             if fmt == "markdown":
                 exp.export_markdown(out, scope)
             elif fmt == "json":
@@ -707,22 +674,18 @@ def _render_export(S: Any) -> None:
             elif fmt == "characters":
                 exp.export_characters_sheet(out)
             elif fmt == "consistency":
-                from littrans.bible.cross_reference import CrossReferenceEngine
+                from littrans.context.cross_reference import CrossReferenceEngine  # FIX
                 report = CrossReferenceEngine(store).run()
                 exp.export_consistency_report(out, report)
- 
-            # FIX: Store file path in session state so download button persists across reruns
+
             S.last_export_file = str(out)
             col_status.success(f"✅ Đã tạo: {out}")
- 
+
         except Exception as e:
             col_status.error(f"❌ Export lỗi: {e}")
             S.last_export_file = None
- 
-    # FIX: Download button rendered outside the trigger button block
-    # — persists across reruns because it reads from session state
+
     if S.get("last_export_file"):
-        from pathlib import Path
         export_path = Path(S.last_export_file)
         if export_path.exists():
             content = export_path.read_text(encoding="utf-8")

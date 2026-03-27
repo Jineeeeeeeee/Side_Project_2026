@@ -1,8 +1,8 @@
 """
 src/littrans/core/pipeline.py — Điều phối pipeline dịch tuần tự.
 
-[v5.3] Phase 3 refactor: engine → core, managers → context, tools → cli.
-[v5.4] Multi-novel: dùng settings.active_input_dir / active_output_dir.
+[FIX] touch_seen chỉ gọi khi char_profiles không rỗng (tránh lock vô ích trong bible mode).
+[FIX] Ghi rõ comment tại điểm _parse_characters dùng hàm riêng, không dùng _parse_list.
 """
 from __future__ import annotations
 
@@ -51,6 +51,8 @@ def _parse_list(raw: list, model_cls, label: str) -> list:
     return result
 
 
+# new_characters cần xử lý how_refers_to_others dict→list riêng,
+# nên KHÔNG dùng _parse_list mà dùng hàm này.
 def _parse_characters(raw: list) -> list:
     result = []
     for c in raw or []:
@@ -97,7 +99,6 @@ class Pipeline:
         if not self._char_instructions:
             print("⚠️  Không tìm thấy prompts/character_profile.md")
 
-        # [Bible Mode] Sync characters từ Bible vào Characters_Active
         if settings.bible_mode and settings.bible_available:
             try:
                 from littrans.context.pipeline_bible_patch import init_characters_from_bible
@@ -111,9 +112,6 @@ class Pipeline:
     # ── Public ────────────────────────────────────────────────────
 
     def run(self, book: str = "") -> None:
-        """Dịch tất cả chương chưa có bản dịch.
-        book: tên subfolder epub (vd: "mybook"). Trống = active_input_dir.
-        """
         scan_dir = settings.input_dir / book if book else settings.active_input_dir
         if not scan_dir.exists():
             print(f"❌ Không tìm thấy '{scan_dir}'."); return
@@ -169,13 +167,11 @@ class Pipeline:
         self._print_summary(total_ok, total_fail, failed)
 
     def retranslate(self, filename: str, update_data: bool = False) -> None:
-        """Dịch lại 1 chương cụ thể."""
         all_files = self.sorted_inputs()
         if filename not in all_files:
             print(f"❌ Không tìm thấy '{filename}'."); return
 
         chapter_index = all_files.index(filename)
-        # [v5.4] Dùng active paths
         fp = str(settings.active_input_dir  / filename)
         base, _  = os.path.splitext(filename)
         op = str(settings.active_output_dir / f"{base}_VN.txt")
@@ -208,7 +204,6 @@ class Pipeline:
         chapter_index   : int,
         skip_data_update: bool = False,
     ) -> bool:
-        """Dịch 1 chương — luôn dùng 3-call flow."""
         raw_text = load_text(filepath)
         if not raw_text.strip():
             print(f"  ⚠️  File rỗng: {filename}"); return False
@@ -235,7 +230,6 @@ class Pipeline:
         skip_data_update: bool,
     ) -> bool:
 
-        # ── Chuẩn bị context ─────────────────────────────────────
         name_lock    = build_name_lock_table()
         known_skills = load_skills_for_chapter(text)
 
@@ -407,7 +401,6 @@ class Pipeline:
             self._record_violations(violations, name_lock, filename)
 
         # ── Ghi file ──────────────────────────────────────────────
-        # [v5.4] out_filepath đã dùng active_output_dir từ _get_pending
         atomic_write(out_filepath, final_translation)
         print(f"  ✅ Dịch xong: {filename}")
 
@@ -424,7 +417,10 @@ class Pipeline:
         if not skip_data_update and post_result.ok:
             self._update_data_from_post(post_result, filename, chapter_index, char_profiles)
 
-        touch_seen(list(char_profiles.keys()), chapter_index)
+        # [FIX] Guard: touch_seen vô nghĩa khi bible mode (char_profiles rỗng)
+        if char_profiles:
+            touch_seen(list(char_profiles.keys()), chapter_index)
+
         time.sleep(settings.success_sleep)
         return True
 
@@ -455,10 +451,6 @@ class Pipeline:
     # ── Helpers ───────────────────────────────────────────────────
 
     def sorted_inputs(self, book: str = "") -> list[str]:
-        """
-        book: tên subfolder (epub name). Nếu trống → scan active_input_dir.
-        Trả về list tên file tương đối (vd: "chapter_0001.txt" hoặc "chapter_001.txt").
-        """
         scan_dir = settings.input_dir / book if book else settings.active_input_dir
         if not scan_dir.exists():
             return []
@@ -467,7 +459,6 @@ class Pipeline:
             int(t) if t.isdigit() else t.lower()
             for t in re.split(r"(\d+)", s)
         ])
-
 
     def _get_pending(self, all_files: list[str], book: str = "") -> list[tuple]:
         pending  = []
@@ -482,7 +473,6 @@ class Pipeline:
             else:
                 pending.append((i, fn, str(in_dir / fn), out))
         return pending
-
 
     def _retry_passes(self, failed: list) -> list:
         for retry_num in range(1, settings.retry_failed_passes + 1):
@@ -542,7 +532,6 @@ class Pipeline:
         data  = load_json(fixes_path) or {"fixes": {}}
         fixes = data.setdefault("fixes", {})
         for v in violations:
-            # FIX: flexible pattern — handles leading spaces, emoji, and arrow variants
             m = re.search(
                 r"Tên gốc ['\\'\"'](.*?)['\\'\"'] còn sót.*?phải dùng ['\\'\"'](.*?)['\\'\"']",
                 v,
@@ -561,7 +550,6 @@ class Pipeline:
             if filename not in entry.get("chapters", []):
                 entry.setdefault("chapters", []).append(filename)
         _save(fixes_path, data)
-
 
     def _print_banner(self, all_files, pending) -> None:
         stats = character_stats()

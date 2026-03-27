@@ -1,7 +1,8 @@
 """
 src/littrans/llm/schemas.py — Pydantic schemas cho toàn bộ pipeline.
 
-Gemini API không chấp nhận additionalProperties → _strip() xóa đệ quy.
+[FIX] Xoá GEMINI_SCHEMA — không còn caller nào dùng (pipeline dùng plain text output).
+     _strip() giữ lại vì vẫn cần nếu ai dùng structured output trong tương lai.
 
 [v5.0] EPS (Emotional Proximity Signal):
   RelationshipDetail.intimacy_level (int 1–5)
@@ -188,7 +189,7 @@ EPS_LABELS = {
 EPS_BAR = {1: "█░░░░", 2: "██░░░", 3: "███░░", 4: "████░", 5: "█████"}
 
 
-# ── Gemini schema helper ──────────────────────────────────────────
+# ── Schema helper (giữ lại cho tương lai nếu cần structured output) ──
 
 def _strip(schema: dict) -> dict:
     """Xóa additionalProperties để Gemini API không reject schema."""
@@ -201,6 +202,3 @@ def _strip(schema: dict) -> dict:
                 if isinstance(item, dict):
                     _strip(item)
     return schema
-
-
-GEMINI_SCHEMA = _strip(TranslationResult.model_json_schema())

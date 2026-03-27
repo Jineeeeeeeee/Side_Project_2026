@@ -3,15 +3,9 @@ src/littrans/config/settings.py — Toàn bộ cấu hình pipeline.
 
 Chỉnh qua .env, KHÔNG sửa file này.
 
-[v4.3 FIX] _env_bool() xử lý đầy đủ các giá trị truthy phổ biến.
-[v4.4] Thêm 3 config cho Scout Glossary Suggest.
-[v4.5] Dual-Model: TRANSLATION_PROVIDER + TRANSLATION_MODEL + ANTHROPIC_API_KEY.
-[v4.5.1] Bỏ ANTHROPIC_MODELS/GEMINI_MODELS chưa dùng → thêm soft validation warning.
-[v5.2] Xóa USE_THREE_CALL — pipeline luôn dùng 3-call flow.
-[v5.4] Multi-novel: novel_name + active_input_dir + active_output_dir + novel_data_dir.
-       Mỗi novel có data riêng lưu trong outputs/<novel_name>/data/.
-       Backward compat: novel_name="" → dùng paths cũ (flat structure).
-[v5.5] BUG-5 fix: xoá field log_dir dead (bị shadow hoàn toàn bởi property cùng tên).
+[FIX] Xoá _bible_dir_raw field không dùng.
+      bible_dir property giờ đọc BIBLE_DIR từ .env (nếu set) thay vì bỏ qua.
+      Backward compat: không set BIBLE_DIR → dùng novel_data_dir/bible như cũ.
 """
 from __future__ import annotations
 
@@ -105,25 +99,24 @@ class Settings:
     # ── Token Budget ─────────────────────────────────────────────
     budget_limit          : int  = field(default_factory=lambda: _env_int("BUDGET_LIMIT", 150_000))
 
-    # ── Base Paths (cố định, không theo novel) ───────────────────
+    # ── Base Paths ───────────────────────────────────────────────
     input_dir    : Path = field(default_factory=lambda: Path(_env("INPUT_DIR",   "inputs")))
     output_dir   : Path = field(default_factory=lambda: Path(_env("OUTPUT_DIR",  "outputs")))
     data_dir     : Path = field(default_factory=lambda: Path(_env("DATA_DIR",    "data")))
-    # NOTE: log_dir không có field — xem property log_dir bên dưới
     prompts_dir  : Path = field(default_factory=lambda: Path(_env("PROMPTS_DIR", "prompts")))
 
     # ── Multi-novel ───────────────────────────────────────────────
-    # novel_name = tên subfolder trong inputs/ và outputs/
-    # Khi rỗng → backward compat với flat structure (1 truyện)
     novel_name   : str  = field(default_factory=lambda: _env("NOVEL_NAME", ""))
 
     # ── Bible System ──────────────────────────────────────────────
-    bible_mode          : bool = field(default_factory=lambda: _env_bool("BIBLE_MODE", False))
-    bible_scan_batch    : int  = field(default_factory=lambda: _env_int("BIBLE_SCAN_BATCH", 5))
-    bible_scan_sleep    : int  = field(default_factory=lambda: _env_int("BIBLE_SCAN_SLEEP", 10))
-    bible_scan_depth    : str  = field(default_factory=lambda: _env("BIBLE_SCAN_DEPTH", "standard"))
-    bible_cross_ref     : bool = field(default_factory=lambda: _env_bool("BIBLE_CROSS_REF", True))
-    _bible_dir_raw      : str  = field(default_factory=lambda: _env("BIBLE_DIR", "data/bible"))
+    bible_mode       : bool = field(default_factory=lambda: _env_bool("BIBLE_MODE", False))
+    bible_scan_batch : int  = field(default_factory=lambda: _env_int("BIBLE_SCAN_BATCH", 5))
+    bible_scan_sleep : int  = field(default_factory=lambda: _env_int("BIBLE_SCAN_SLEEP", 10))
+    bible_scan_depth : str  = field(default_factory=lambda: _env("BIBLE_SCAN_DEPTH", "standard"))
+    bible_cross_ref  : bool = field(default_factory=lambda: _env_bool("BIBLE_CROSS_REF", True))
+    # BIBLE_DIR env: custom root dir cho bible data (optional).
+    # Rỗng → dùng novel_data_dir/bible (default behavior).
+    _bible_dir_env   : str  = field(default_factory=lambda: _env("BIBLE_DIR", ""))
 
     # ── EPUB Processor ────────────────────────────────────────────
     epub_dir_raw        : str  = field(default_factory=lambda: _env("EPUB_DIR",        "epub"))
@@ -172,11 +165,9 @@ class Settings:
                 f"Nếu sai tên, API sẽ báo lỗi lúc chạy."
             )
 
-        # Tạo thư mục cơ bản (không phụ thuộc novel)
         for p in [self.input_dir, self.output_dir, self.prompts_dir]:
             p.mkdir(parents=True, exist_ok=True)
 
-        # Tạo thư mục theo novel (hoặc fallback)
         self._ensure_novel_dirs()
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -188,7 +179,6 @@ class Settings:
         )
 
     def _ensure_novel_dirs(self) -> None:
-        """Tạo tất cả thư mục cần thiết cho novel hiện tại."""
         dirs = [
             self.novel_data_dir,
             self.glossary_dir,
@@ -212,43 +202,35 @@ class Settings:
 
     @property
     def active_input_dir(self) -> Path:
-        """Thư mục chứa file chương của novel hiện tại.
-
-        novel_name set  → inputs/<novel_name>/
-        novel_name rỗng → inputs/   (backward compat)
-        """
         if self.novel_name:
             return self.input_dir / self.novel_name
         return self.input_dir
 
     @property
     def active_output_dir(self) -> Path:
-        """Thư mục bản dịch + data của novel hiện tại.
-
-        novel_name set  → outputs/<novel_name>/
-        novel_name rỗng → outputs/   (backward compat)
-        """
         if self.novel_name:
             return self.output_dir / self.novel_name
         return self.output_dir
 
     @property
     def novel_data_dir(self) -> Path:
-        """Thư mục data riêng của novel.
-
-        novel_name set  → outputs/<novel_name>/data/
-        novel_name rỗng → data/   (backward compat)
-        """
         if self.novel_name:
             return self.output_dir / self.novel_name / "data"
         return self.data_dir
 
     # ════════════════════════════════════════════════════════════
-    # DERIVED PATHS (tất cả đều theo novel_data_dir)
+    # DERIVED PATHS
     # ════════════════════════════════════════════════════════════
 
     @property
     def bible_dir(self) -> Path:
+        """
+        Thư mục Bible data.
+        Nếu BIBLE_DIR set trong .env → dùng path đó (absolute hoặc relative).
+        Không set → novel_data_dir/bible (default).
+        """
+        if self._bible_dir_env:
+            return Path(self._bible_dir_env)
         return self.novel_data_dir / "bible"
 
     @property
@@ -331,7 +313,6 @@ class Settings:
 
     @property
     def log_dir(self) -> Path:
-        """Log theo novel khi có novel_name."""
         if self.novel_name:
             return self.output_dir / self.novel_name / "logs"
         return Path(_env("LOG_DIR", "logs"))
@@ -356,28 +337,15 @@ class Settings:
 # ── Singleton ─────────────────────────────────────────────────────
 settings = Settings()
 
-# ── Thread-safe lock cho set_novel ───────────────────────────────
 _novel_lock = threading.Lock()
 
 
 def set_novel(name: str) -> None:
-    """Đặt novel hiện tại và tạo thư mục cần thiết.
-
-    Gọi trước khi chạy pipeline hoặc khi người dùng đổi truyện trong UI.
-    Thread-safe: dùng object.__setattr__ để bypass frozen dataclass.
-
-    Args:
-        name: Tên subfolder trong inputs/. Rỗng = reset về flat structure.
-    """
     with _novel_lock:
         name = name.strip()
         object.__setattr__(settings, "novel_name", name)
-        # Tạo thư mục cho novel mới
         settings._ensure_novel_dirs()
-
-        # Reset logging handler về file log mới
         _reset_logging()
-
         if name:
             print(f"  📚 Novel: '{name}' → {settings.active_output_dir}")
         else:
@@ -385,7 +353,6 @@ def set_novel(name: str) -> None:
 
 
 def _reset_logging() -> None:
-    """Đổi log file khi novel thay đổi."""
     root_logger = logging.getLogger()
     for handler in root_logger.handlers[:]:
         if isinstance(handler, logging.FileHandler):
@@ -404,15 +371,9 @@ def _reset_logging() -> None:
 
 
 def get_available_novels() -> list[str]:
-    """Liệt kê tất cả novel có trong inputs/ (là subfolder).
-
-    Returns:
-        Danh sách tên novel đã sort, hoặc [] nếu chỉ có flat structure.
-    """
     inp = settings.input_dir
     if not inp.exists():
         return []
-
     novels = sorted([
         d.name for d in inp.iterdir()
         if d.is_dir() and not d.name.startswith(".")

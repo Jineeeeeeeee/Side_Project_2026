@@ -2,10 +2,12 @@
 src/littrans/context/skills.py — Quản lý Skills.json.
 
 [Refactor] managers/ → context/. Import: managers.base → context.base.
+[FIX] Xoá module-level singleton _manager.
+      Dùng _get_manager() factory mỗi lần gọi → đảm bảo đúng path sau set_novel().
+      Cách cũ: _manager tạo 1 lần lúc import với settings.skills_file tại thời điểm đó.
+      Sau set_novel(), skills_file đổi path nhưng _manager._path vẫn trỏ novel cũ.
 """
 from __future__ import annotations
-
-import re
 
 from littrans.config.settings import settings
 from littrans.context.base import BaseManager
@@ -93,13 +95,17 @@ class SkillsManager(BaseManager):
         return count
 
 
-# ── Module-level singleton + public API ──────────────────────────
+# ── Factory (thay thế singleton) ─────────────────────────────────
+# Gọi settings.skills_file mỗi lần để luôn lấy path của novel hiện tại.
 
-_manager = SkillsManager(settings.skills_file)
+def _get_manager() -> SkillsManager:
+    return SkillsManager(settings.skills_file)
 
+
+# ── Public API ────────────────────────────────────────────────────
 
 def load_skills_for_chapter(chapter_text: str) -> dict[str, dict]:
-    return _manager.load_for_chapter(chapter_text)
+    return _get_manager().load_for_chapter(chapter_text)
 
 
 def format_skills_for_prompt(skills: dict[str, dict]) -> str:
@@ -122,8 +128,8 @@ def format_skills_for_prompt(skills: dict[str, dict]) -> str:
 
 
 def add_skill_updates(updates: list, source_chapter: str) -> int:
-    return _manager.add_updates(updates, source_chapter)
+    return _get_manager().add_updates(updates, source_chapter)
 
 
 def skills_stats() -> dict[str, int]:
-    return _manager.stats()
+    return _get_manager().stats()

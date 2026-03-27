@@ -1,26 +1,14 @@
 """
 src/littrans/core/post_analyzer.py — Post-call: review + extract metadata.
 
-Chạy SAU Translation call + SAU post_processor.run(). Làm 2 việc:
-  1. Đánh giá chất lượng bản dịch (đã được code-cleanup):
-       - Lỗi dịch thuật (tên, kỹ năng, pronoun) → yêu cầu retry Trans-call
-       - Lỗi format nhỏ còn sót → mô tả để log (không cần sửa — post_processor đã làm)
-  2. Extract metadata đầy đủ:
-       new_terms, new_characters (full profile), relationship_updates, skill_updates
-
-[v4.3 FIX] auto_fixed_translation KHÔNG còn nằm trong JSON response.
-[v5.0] Bỏ hoàn toàn _auto_fix_call() — thay bằng post_processor.py (code thuần).
-       PostResult.auto_fixed vẫn giữ để backward compat nhưng luôn = False từ đây.
-
-Không raise — nếu lỗi hoàn toàn, trả về PostResult với translation gốc + metadata rỗng.
+[FIX] Xoá auto_fixed field và has_auto_fix() method — cả hai luôn False/không làm gì.
+     Cleanup được đảm nhiệm hoàn toàn bởi post_processor.py (14-pass code thuần).
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 
-from littrans.config.settings import settings
 from littrans.utils.io_utils import safe_list
 
 
@@ -52,14 +40,9 @@ class PostResult:
 
     # Meta
     ok                  : bool = True
-    auto_fixed          : bool = False  # Luôn False — cleanup do post_processor.py đảm nhiệm
 
     def has_retry_required(self) -> bool:
         return any(i.severity == "retry_required" for i in self.issues)
-
-    def has_auto_fix(self) -> bool:
-        """Backward compat — luôn False vì post_processor đã xử lý."""
-        return False
 
 
 # ── System prompt ─────────────────────────────────────────────────
@@ -162,15 +145,11 @@ Trả về JSON. KHÔNG thêm bất cứ thứ gì ngoài JSON:
 def run(
     source_text     : str,
     translation     : str,
-    chapter_map     = None,  # ChapterMap | None
+    chapter_map     = None,
     source_filename : str = "",
 ) -> PostResult:
     """
     Chạy Post-call. Trả về PostResult.
-
-    Lưu ý: translation đầu vào đã được post_processor.py xử lý trước.
-    Post-call chỉ review chất lượng dịch thuật và extract metadata.
-
     Không raise — lỗi trả về PostResult với translation gốc + metadata rỗng.
     """
     if not translation.strip():
@@ -192,7 +171,7 @@ def run(
         print(f"  ⚠️  Post-call lỗi: {e} → dùng bản dịch gốc, bỏ qua metadata")
         return PostResult(
             final_translation = translation,
-            passed            = True,   # không block pipeline
+            passed            = True,
             ok                = False,
         )
 
@@ -262,5 +241,4 @@ def _parse(data: dict, original_translation: str, filename: str) -> PostResult:
         relationship_updates = safe_list(metadata.get("relationship_updates")),
         skill_updates        = safe_list(metadata.get("skill_updates")),
         ok                   = True,
-        auto_fixed           = False,
     )

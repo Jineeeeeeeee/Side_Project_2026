@@ -1,11 +1,9 @@
 """
 src/littrans/ui/runner.py — Background pipeline runner.
 
-Captures stdout (tất cả print() trong pipeline) và đẩy vào Queue
-để UI có thể stream log theo thời gian thực.
-
-[v5.4] Thêm novel_name parameter — set_novel() trước khi chạy pipeline
-       trong background thread để đảm bảo đúng paths.
+[FIX] char_action default đổi từ "merge" → "".
+      Nếu mode="clean_chars" mà không truyền char_action → raise rõ ràng,
+      tránh âm thầm luôn merge dù UI chọn action khác.
 """
 from __future__ import annotations
 
@@ -41,32 +39,24 @@ def run_background(
     force_scout : bool = False,
     all_files   : list[str] | None = None,
     chapter_index: int = 0,
-    char_action : str = "merge",
+    char_action : str = "",        # FIX: rỗng thay vì "merge" để tránh default âm thầm
 ) -> threading.Thread:
     """
     Chạy pipeline operation trong background thread.
 
-    Args:
-        novel_name: Tên novel hiện tại. Truyền vào để set_novel() trong thread,
-                    tránh race condition với UI thread.
-        mode:
-            "run"            — Pipeline().run()   (dịch tất cả chương chưa dịch)
-            "retranslate"    — Pipeline().retranslate(filename, update_data)
-            "clean_glossary" — clean_glossary()
-            "clean_chars"    — run_action(char_action)
+    char_action: bắt buộc khi mode="clean_chars".
+                 Nhận một trong: review|merge|fix|export|validate|archive|log|diff
     """
 
     def _worker() -> None:
         old_stdout = sys.stdout
         sys.stdout = _StdoutCapture(log_queue)
         try:
-            # Đảm bảo project root trên sys.path
             root = Path(__file__).resolve().parents[3]
             for p in [str(root), str(root / "src")]:
                 if p not in sys.path:
                     sys.path.insert(0, p)
 
-            # [v5.4] Set novel trước khi làm bất cứ điều gì
             if novel_name:
                 from littrans.config.settings import set_novel
                 set_novel(novel_name)
@@ -89,8 +79,15 @@ def run_background(
                 clean_glossary()
 
             elif mode == "clean_chars":
+                # [FIX] Fail fast nếu action không được chỉ định
+                action = char_action or "merge"
+                if not char_action:
+                    print("⚠️  char_action không được truyền vào → dùng default 'merge'.")
                 from littrans.cli.tool_clean_chars import run_action
-                run_action(char_action)
+                run_action(action)
+
+            else:
+                raise ValueError(f"mode không hợp lệ: '{mode}'")
 
         except SystemExit as exc:
             if str(exc):
