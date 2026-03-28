@@ -61,8 +61,13 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')" \
     || exit 1
 
-# docker-entrypoint.sh giờ nằm trong deployments/
-COPY --chown=littrans:littrans deployments/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+# [FIX] COPY trước khi switch sang non-root user để chmod hoạt động,
+# sau đó chmod +x để đảm bảo entrypoint executable trên mọi hệ thống
+# (Git không bảo toàn file permissions → container crash với Permission denied).
+COPY deployments/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh && \
+    chown littrans:littrans /usr/local/bin/docker-entrypoint.sh
+
 ENTRYPOINT ["docker-entrypoint.sh"]
 
 # Default: Web UI via scripts/

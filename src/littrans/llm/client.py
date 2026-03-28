@@ -10,6 +10,8 @@ src/littrans/llm/client.py — Gemini API client + Multi-Key Pool + Anthropic di
 
 [FIX BUG-5] handle_api_error() được gọi trong mọi call function của Gemini,
             truyền đúng failed_key về pool.
+
+[FIX IMPORT] Xoá GEMINI_SCHEMA khỏi import — schemas.py đã xoá constant này.
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ from google import genai
 from google.genai import types
 
 from littrans.config.settings import settings
-from littrans.llm.schemas import TranslationResult, GEMINI_SCHEMA
+from littrans.llm.schemas import TranslationResult  # ← GEMINI_SCHEMA đã bị xoá khỏi schemas.py
 
 # Timeout cho mọi API call (giây) — áp vào http_options của SDK
 API_TIMEOUT: int = 90

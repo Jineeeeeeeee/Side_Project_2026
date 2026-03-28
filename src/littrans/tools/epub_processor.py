@@ -17,6 +17,10 @@ Tích hợp LiTTrans:
   - Output vào inputs/{name}/ sẵn sàng cho: translate --book {name}
 
 Yêu cầu thêm: pip install ebooklib beautifulsoup4
+
+[FIX] Xoá import _call_with_timeout (đã bị xoá khỏi client.py).
+      Thay _call_with_timeout(_do, API_TIMEOUT) → _do() trực tiếp.
+      Timeout được xử lý bởi http_options={'timeout': API_TIMEOUT} trong genai.Client.
 """
 from __future__ import annotations
 
@@ -75,7 +79,8 @@ def _parse_retry_delay(error: Exception, default: float = 30.0) -> float:
 def _epub_call_text(system: str, user: str) -> str:
     """Gọi Gemini → plain text. Dùng cho clean agent."""
     from google.genai import types
-    from littrans.llm.client import key_pool, is_rate_limit, handle_api_error, _call_with_timeout, API_TIMEOUT
+    # [FIX] Bỏ _call_with_timeout — timeout được xử lý bởi http_options trong genai.Client
+    from littrans.llm.client import key_pool, is_rate_limit, handle_api_error
     settings = _get_settings()
 
     while True:
@@ -89,7 +94,7 @@ def _epub_call_text(system: str, user: str) -> str:
                 ),
             )
         try:
-            resp = _call_with_timeout(_do, API_TIMEOUT)
+            resp = _do()  # [FIX] trực tiếp thay vì _call_with_timeout(_do, API_TIMEOUT)
             if not resp.parts:
                 tqdm.write("    [!] AI trả về rỗng — giữ nguyên text.")
                 return user
@@ -111,7 +116,8 @@ def _epub_call_json(system: str, user: str) -> dict | list:
     Gọi Gemini → JSON. Giữ nguyên list nếu structure analyst trả về list.
     """
     from google.genai import types
-    from littrans.llm.client import key_pool, is_rate_limit, handle_api_error, _call_with_timeout, API_TIMEOUT
+    # [FIX] Bỏ _call_with_timeout — timeout được xử lý bởi http_options trong genai.Client
+    from littrans.llm.client import key_pool, is_rate_limit, handle_api_error
     settings = _get_settings()
 
     while True:
@@ -126,7 +132,7 @@ def _epub_call_json(system: str, user: str) -> dict | list:
                 ),
             )
         try:
-            resp = _call_with_timeout(_do, API_TIMEOUT)
+            resp = _do()  # [FIX] trực tiếp thay vì _call_with_timeout(_do, API_TIMEOUT)
             key_pool.on_success()
             raw   = resp.text or "{}"
             clean = re.sub(r"^```json\s*|```\s*$", "", raw.strip(), flags=re.MULTILINE)
