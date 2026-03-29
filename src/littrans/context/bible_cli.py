@@ -35,15 +35,34 @@ def bible_scan(
     depth: str = typer.Option("standard", "--depth", "-d", help="Depth: quick | standard | deep"),
     force: bool = typer.Option(False, "--force", "-f", help="Scan lại kể cả chương đã scan"),
     new_only: bool = typer.Option(True, "--new-only/--all", help="Chỉ scan chương mới (mặc định: true)"),
+    novel: str = typer.Option("", "--novel", "-n", help="Tên novel (subfolder trong inputs/)"),  # ADD THIS
 ):
     """Scan chương trong inputs/ → xây dựng Bible knowledge base."""
     _check_bible_mode()
     if depth not in ("quick","standard","deep"):
         console.print(f"[red]❌ depth phải là: quick | standard | deep[/red]"); raise typer.Exit(1)
+    
+    # ADD THIS BLOCK
+    if novel:
+        from littrans.config.settings import set_novel
+        set_novel(novel)
+    else:
+        # Auto-detect novel like translate command does
+        from littrans.config.settings import get_available_novels, set_novel
+        novels = get_available_novels()
+        if len(novels) == 1:
+            console.print(f"[dim]→ Tự chọn novel duy nhất: [bold]{novels[0]}[/bold][/dim]")
+            set_novel(novels[0])
+        elif len(novels) > 1:
+            console.print("\n[yellow]⚠️  Có nhiều novel. Chỉ định với --novel:[/yellow]\n")
+            for n in novels:
+                console.print(f"  • {n}")
+            raise typer.Exit(1)
+    
     from littrans.config.settings import settings
     object.__setattr__(settings, "bible_scan_depth", depth)
     store   = _get_store()
-    from littrans.context.bible_scanner import BibleScanner   # ← ĐỔI
+    from littrans.context.bible_scanner import BibleScanner
     scanner = BibleScanner(store)
     console.print(f"\n[bold]📖 Bible Scan[/bold] — depth=[cyan]{depth}[/cyan]  force=[cyan]{force}[/cyan]  new_only=[cyan]{new_only}[/cyan]\n")
     if new_only and not force: stats = scanner.scan_new_only()

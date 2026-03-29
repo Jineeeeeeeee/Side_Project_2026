@@ -226,12 +226,14 @@ class Settings:
     def bible_dir(self) -> Path:
         """
         Thư mục Bible data.
-        Nếu BIBLE_DIR set trong .env → dùng path đó (absolute hoặc relative).
-        Không set → novel_data_dir/bible (default).
+        Khi có novel_name → LUÔN dùng novel_data_dir/bible (ưu tiên tuyệt đối).
+        Không có novel → dùng BIBLE_DIR env nếu set, ngược lại data_dir/bible.
         """
-        if self._bible_dir_env:
+        if self.novel_name:                          # FIX: novel mode luôn dùng novel path
+            return self.novel_data_dir / "bible"
+        if self._bible_dir_env:                      # flat mode: dùng BIBLE_DIR env
             return Path(self._bible_dir_env)
-        return self.novel_data_dir / "bible"
+        return self.data_dir / "bible"               # flat mode: default@
 
     @property
     def bible_available(self) -> bool:

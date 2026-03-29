@@ -512,9 +512,9 @@ class BibleScanner:
 
     def scan_all(self, force: bool = False) -> dict[str, int]:
         cfg       = _get_settings()
-        all_files = self._sorted_inputs(cfg.input_dir)
+        all_files = self._sorted_inputs(cfg.active_input_dir)  # FIX: was cfg.input_dir
         if not all_files:
-            print(f"❌ Không có file nào trong '{cfg.input_dir}'.")
+            print(f"❌ Không có file nào trong '{cfg.active_input_dir}'.")  # FIX
             return {"scanned": 0, "skipped": 0, "failed": 0}
         self._store.update_meta(total_chapters=len(all_files))
         print(f"\n{'═'*62}")
@@ -632,7 +632,7 @@ class BibleScanner:
         batch_n = 0
         for i, filename in enumerate(all_files):
             print(f"\n[{i+1}/{len(all_files)}] {filename}")
-            fp   = cfg.input_dir / filename
+            fp   = cfg.active_input_dir / filename  # FIX: was cfg.input_dir
             text = load_text(fp)
             if not text.strip():
                 print(f"  ⚠️  File rỗng — bỏ qua.")

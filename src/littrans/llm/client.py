@@ -26,7 +26,7 @@ from littrans.config.settings import settings
 from littrans.llm.schemas import TranslationResult  # ← GEMINI_SCHEMA đã bị xoá khỏi schemas.py
 
 # Timeout cho mọi API call (giây) — áp vào http_options của SDK
-API_TIMEOUT: int = 90
+API_TIMEOUT: int = 300
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -55,13 +55,18 @@ class ApiKeyPool:
         self._lock      = threading.Lock()
         # [FIX BUG-2] Thêm http_options timeout vào Client — SDK tự handle,
         # không cần ThreadPoolExecutor wrapper nữa.
-        self._clients   = {
+        from google.genai import types as _genai_types
+
+        self._clients = {
             k: genai.Client(
                 api_key=k,
-                http_options={"timeout": API_TIMEOUT},
+                http_options=_genai_types.HttpOptions(
+                    timeout=API_TIMEOUT * 1000,  # SDK expects milliseconds
+                ),
             )
             for k in api_keys
         }
+
 
     @property
     def current_key(self) -> str:
