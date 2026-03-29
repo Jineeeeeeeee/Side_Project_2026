@@ -370,27 +370,67 @@ class Pipeline:
             if post_result.passed or not post_result.has_retry_required():
                 break
 
-            if (settings.trans_retry_on_quality
-                    and post_attempt <= settings.post_call_max_retries):
-                print(f"  🔄 Retry Trans-call do lỗi dịch thuật...")
-                retry_instruction = post_result.retry_instruction
-                time.sleep(settings.post_call_sleep)
+            # src/littrans/core/pipeline.py
+# Tìm và thay thế đoạn sau trong _translate_three_call():
+# (phần if/else cuối của post-call loop)
 
-                try:
-                    input_text = f"⚠️ RETRY — {retry_instruction}\n\n---\n\n{text}"
-                    final_translation = call_translation(system_prompt, input_text)
-                    final_translation, pp_changes = pp_run(final_translation)
-                    if pp_changes:
-                        print(pp_report(pp_changes))
-                    time.sleep(settings.post_call_sleep)
-                except Exception as e:
-                    logging.error(f"{filename} | post retry trans | {e}")
-                    print(f"  ❌ Retry Trans lỗi: {e}")
-                    break
+            if (settings.trans_retry_on_quality
+                            and post_attempt <= settings.post_call_max_retries):
+
+                        # ── Bước 1: Auto-fix (targeted, rẻ hơn full retry) ──────
+                        n_retry_issues = sum(
+                            1 for i in post_result.issues
+                            if i.severity == "retry_required"
+                        )
+                        print(f"  🔧 Auto-fix {n_retry_issues} lỗi (trước khi retry Trans-call)...")
+                        time.sleep(settings.post_call_sleep)
+
+                        try:
+                            from littrans.core.post_analyzer import auto_fix_translation
+                            fixed_tl, fix_descs = auto_fix_translation(
+                                final_translation,
+                                post_result.issues,
+                                name_lock,
+                                filename,
+                            )
+                        except Exception as _fe:
+                            logging.warning(f"{filename} | auto_fix: {_fe}")
+                            fixed_tl, fix_descs = final_translation, []
+
+                        if fix_descs:
+                            # Auto-fix thành công → apply pp + để loop tiếp tục verify
+                            final_translation, pp_changes = pp_run(fixed_tl)
+                            if pp_changes:
+                                print(pp_report(pp_changes))
+                            print(f"  ✅ Auto-fix xong ({len(fix_descs)} lỗi đã vá):")
+                            for desc in fix_descs:
+                                print(f"     • {desc}")
+                            time.sleep(settings.post_call_sleep)
+                            # Tiếp tục loop → post-call sẽ verify lại
+                        else:
+                            # ── Bước 2: Auto-fix thất bại → fallback full retry ─
+                            print(f"  ⚠️  Auto-fix thất bại → Retry Trans-call toàn bộ...")
+                            retry_instruction = post_result.retry_instruction
+                            time.sleep(settings.post_call_sleep)
+
+                            try:
+                                input_text = f"⚠️ RETRY — {retry_instruction}\n\n---\n\n{text}"
+                                final_translation = call_translation(system_prompt, input_text)
+                                final_translation, pp_changes = pp_run(final_translation)
+                                if pp_changes:
+                                    print(pp_report(pp_changes))
+                                time.sleep(settings.post_call_sleep)
+                            except Exception as e:
+                                logging.error(f"{filename} | post retry trans | {e}")
+                                print(f"  ❌ Retry Trans lỗi: {e}")
+                                break
             else:
-                print(f"  ⚠️  Vẫn còn lỗi dịch thuật sau {settings.post_call_max_retries} lần retry → ghi file để review")
-                final_translation = post_result.final_translation
-                break
+                        print(
+                            f"  ⚠️  Vẫn còn lỗi dịch thuật sau {settings.post_call_max_retries} "
+                            f"lần retry → ghi file để review"
+                        )
+                        final_translation = post_result.final_translation
+                        break
 
         # ── Name Lock validate ────────────────────────────────────
         violations = validate_translation(final_translation, name_lock)

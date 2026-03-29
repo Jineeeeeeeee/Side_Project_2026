@@ -242,3 +242,105 @@ def _parse(data: dict, original_translation: str, filename: str) -> PostResult:
         skill_updates        = safe_list(metadata.get("skill_updates")),
         ok                   = True,
     )
+
+# ── Auto-fix prompt ───────────────────────────────────────────────
+
+_AUTO_FIX_SYSTEM = """Bạn là AI editor chuyên vá lỗi bản dịch LitRPG/Tu Tiên.
+Nhận bản dịch tiếng Việt + danh sách lỗi cụ thể cần sửa.
+
+QUY TẮC CỨNG:
+1. Chỉ sửa đúng các lỗi được liệt kê — KHÔNG thay đổi phần không liên quan.
+2. Giữ nguyên toàn bộ format: dòng trống, *nghiêng*, **đậm**, [Kỹ năng], system box.
+3. Nếu có NAME LOCK → bắt buộc dùng bản chuẩn đã cho, không ngoại lệ.
+4. KHÔNG thêm lời mở đầu, kết luận, chú thích.
+
+Trả về BẢN DỊCH ĐÃ SỬA — plain text, không JSON, không markdown fences."""
+
+
+# ── Public ────────────────────────────────────────────────────────
+
+def auto_fix_translation(
+    translation     : str,
+    issues          : list[QualityIssue],
+    name_lock_table : dict[str, str] | None = None,
+    source_filename : str = "",
+) -> tuple[str, list[str]]:
+    """
+    Targeted AI fix thay vì full Trans-call retry.
+    Gửi bản dịch + danh sách lỗi → AI sửa chính xác → trả về bản đã vá.
+
+    Chi phí: ~1 Gemini call (nhẹ) thay vì 1 Trans-call đầy đủ.
+
+    Returns:
+        (fixed_translation, fix_descriptions)
+        (original_translation, []) nếu thất bại hoặc không có lỗi cần sửa.
+    """
+    retry_issues = [i for i in issues if i.severity == "retry_required"]
+    if not retry_issues:
+        return translation, []
+
+    # ── Build issue block ─────────────────────────────────────────
+    issues_block = "\n".join(
+        f"  {idx + 1}. [{i.type}] tại «{i.location[:60]}» — {i.detail}"
+        for idx, i in enumerate(retry_issues)
+    )
+
+    # ── Relevant Name Lock only (giảm token) ─────────────────────
+    nl_block = ""
+    if name_lock_table:
+        relevant = {
+            k: v for k, v in name_lock_table.items()
+            if k.lower() in translation.lower()
+        }
+        if relevant:
+            nl_block = (
+                "\n\nNAME LOCK BẮT BUỘC:\n"
+                + "\n".join(f"  {eng} → {vn}" for eng, vn in relevant.items())
+            )
+
+    # ── Truncate translation nếu quá dài ─────────────────────────
+    MAX_CHARS    = 12_000
+    is_truncated = len(translation) > MAX_CHARS
+    tl_content   = translation[:MAX_CHARS]
+    if is_truncated:
+        tl_content += "\n\n[... phần còn lại không gửi — giữ nguyên khi ghép lại ...]"
+
+    user_msg = (
+        f"SỬA {len(retry_issues)} LỖI SAU:\n"
+        f"{issues_block}"
+        f"{nl_block}\n\n"
+        f"BẢN DỊCH CẦN SỬA:\n"
+        f"{tl_content}"
+    )
+
+    try:
+        from littrans.llm.client import call_gemini_text
+        fixed = call_gemini_text(_AUTO_FIX_SYSTEM, user_msg)
+
+        if not fixed or not fixed.strip():
+            logging.warning(f"[AutoFix] {source_filename}: AI trả về rỗng")
+            return translation, []
+
+        # Sanity check: không để AI bị mất nội dung
+        min_acceptable = len(translation) * 0.75
+        if len(fixed) < min_acceptable:
+            logging.warning(
+                f"[AutoFix] {source_filename}: kết quả quá ngắn "
+                f"({len(fixed)} < {min_acceptable:.0f} chars) → từ chối"
+            )
+            return translation, []
+
+        # Ghép lại phần bị truncate (nếu có)
+        if is_truncated:
+            fixed = fixed.rstrip("\n") + "\n\n" + translation[MAX_CHARS:].lstrip("\n")
+
+        fix_summaries = [f"[{i.type}] {i.detail[:70]}" for i in retry_issues]
+        logging.info(
+            f"[AutoFix] {source_filename}: patched {len(retry_issues)} issues "
+            f"({len(translation)} → {len(fixed)} chars)"
+        )
+        return fixed, fix_summaries
+
+    except Exception as e:
+        logging.warning(f"[AutoFix] {source_filename}: {e}")
+        return translation, []

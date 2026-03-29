@@ -8,7 +8,7 @@ src/littrans/context/skills.py — Quản lý Skills.json.
       Sau set_novel(), skills_file đổi path nhưng _manager._path vẫn trỏ novel cũ.
 """
 from __future__ import annotations
-
+import logging
 from littrans.config.settings import settings
 from littrans.context.base import BaseManager
 from littrans.core.patterns import word_boundary_search
@@ -105,8 +105,50 @@ def _get_manager() -> SkillsManager:
 # ── Public API ────────────────────────────────────────────────────
 
 def load_skills_for_chapter(chapter_text: str) -> dict[str, dict]:
-    return _get_manager().load_for_chapter(chapter_text)
+    result = _get_manager().load_for_chapter(chapter_text)
 
+    # ── FIX: Khi Bible mode, bổ sung skills từ Bible Store
+    if settings.bible_mode and settings.bible_available:
+        _augment_with_bible_skills(result, chapter_text)
+
+    return result
+
+def _augment_with_bible_skills(skills: dict[str, dict], chapter_text: str) -> None:
+    """
+    Bổ sung Bible skill entities vào skills dict nếu chúng xuất hiện trong chapter.
+    Giải quyết vấn đề Skills: 0 khi Skills.json rỗng nhưng Bible đã có dữ liệu.
+
+    Chỉ thêm skill chưa có trong skills dict để tránh overwrite dữ liệu từ Skills.json.
+    """
+    try:
+        from littrans.context.bible_store import BibleStore
+        store = BibleStore(settings.bible_dir)
+
+        for skill_entity in store.get_all_entities("skill"):
+            en_name   = (skill_entity.get("en_name") or "").strip()
+            canonical = (skill_entity.get("canonical_name") or "").strip()
+
+            if not en_name or not canonical:
+                continue
+            if en_name in skills:
+                continue  # đã có từ Skills.json, không overwrite
+
+            # Chỉ include nếu skill xuất hiện trong chapter này
+            vn_bare = canonical.strip("[]")
+            if (word_boundary_search(en_name, chapter_text) or
+                    word_boundary_search(vn_bare, chapter_text)):
+                skills[en_name] = {
+                    "vietnamese"     : canonical,
+                    "owner"          : "",
+                    "skill_type"     : skill_entity.get("skill_type", "active"),
+                    "evolved_from"   : "",
+                    "description"    : skill_entity.get("description", ""),
+                    "first_seen"     : skill_entity.get("first_appearance", ""),
+                    "evolution_chain": [canonical],
+                }
+
+    except Exception as e:
+        logging.warning(f"[Skills] _augment_with_bible_skills lỗi: {e}")
 
 def format_skills_for_prompt(skills: dict[str, dict]) -> str:
     if not skills:

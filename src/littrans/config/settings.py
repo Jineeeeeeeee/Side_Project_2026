@@ -137,6 +137,9 @@ class Settings:
         "gemini-1.5-flash",
     })
 
+    # src/littrans/config/settings.py
+# Chỉ thay đổi trong __post_init__ và thêm 1 method mới
+
     def __post_init__(self) -> None:
         if not self.gemini_api_key:
             sys.exit("❌ Thiếu GEMINI_API_KEY trong .env")
@@ -168,7 +171,12 @@ class Settings:
         for p in [self.input_dir, self.output_dir, self.prompts_dir]:
             p.mkdir(parents=True, exist_ok=True)
 
-        self._ensure_novel_dirs()
+        # ── FIX: Chỉ tạo data dirs khi:
+        #   1. novel_name đã set rõ trong .env (single-novel hoặc explicit)
+        #   2. HOẶC flat mode thực sự: inputs/ chưa có novel subdirs
+        # Nếu đang ở multi-novel mode mà novel_name chưa set → defer sang set_novel()
+        if self.novel_name or not self._has_novel_inputs():
+            self._ensure_novel_dirs()
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
         logging.basicConfig(
@@ -177,6 +185,22 @@ class Settings:
             format="%(asctime)s | %(levelname)s | %(message)s",
             encoding="utf-8",
         )
+
+    def _has_novel_inputs(self) -> bool:
+        """
+        Phát hiện multi-novel mode: inputs/ có subfolder chứa chapter files không?
+        Dùng để tránh tạo root data/ khi user đang dùng multi-novel setup.
+        """
+        try:
+            if not self.input_dir.exists():
+                return False
+            for d in self.input_dir.iterdir():
+                if d.is_dir() and not d.name.startswith("."):
+                    if any(f.suffix in (".txt", ".md") for f in d.iterdir()):
+                        return True
+            return False
+        except Exception:
+            return False
 
     def _ensure_novel_dirs(self) -> None:
         dirs = [

@@ -28,6 +28,9 @@ from littrans.core.patterns import word_boundary_pattern
 
 # ── Build table ───────────────────────────────────────────────────
 
+# src/littrans/context/name_lock.py
+# Thay thế toàn bộ hàm build_name_lock_table() và thêm _extract_from_bible()
+
 def build_name_lock_table() -> dict[str, str]:
     """Trả về {english_name: canonical_vn_name}."""
     table: dict[str, str] = {}
@@ -36,7 +39,46 @@ def build_name_lock_table() -> dict[str, str]:
         path = settings.glossary_files.get(cat)
         if path:
             _extract_from_glossary_file(table, path)
+
+    # ── FIX: Khi Bible mode, bổ sung tên từ Bible Store
+    # Đảm bảo entities đã scan (characters, locations, factions) vào Name Lock
+    if settings.bible_mode and settings.bible_available:
+        _extract_from_bible(table)
+
     return table
+
+
+def _extract_from_bible(table: dict[str, str]) -> None:
+    """
+    Trích xuất name lock entries trực tiếp từ Bible Store.
+    Chạy khi bible_mode=True để bù đắp cho trường hợp Characters_Active
+    chưa được sync đầy đủ từ Bible.
+
+    Bao gồm: character, location, faction (3 loại có tên VN khác EN).
+    """
+    try:
+        from littrans.context.bible_store import BibleStore
+        store = BibleStore(settings.bible_dir)
+
+        for entity_type in ("character", "location", "faction"):
+            for entity in store.get_all_entities(entity_type):
+                en_name   = (entity.get("en_name") or "").strip()
+                canonical = (entity.get("canonical_name") or "").strip()
+
+                # Chỉ lock khi EN ≠ VN (western names giữ nguyên → không lock)
+                if en_name and canonical and en_name.lower() != canonical.lower():
+                    _lock(table, en_name, canonical)
+
+                # Xử lý alias map (vd: "Old Man" → "Lão Trượng")
+                alias_map = entity.get("alias_canonical_map") or {}
+                for alias_en, alias_vn in alias_map.items():
+                    alias_en = (alias_en or "").strip()
+                    alias_vn = (alias_vn or "").strip()
+                    if alias_en and alias_vn and alias_en.lower() != alias_vn.lower():
+                        _lock(table, alias_en, alias_vn)
+
+    except Exception as e:
+        logging.warning(f"[NameLock] _extract_from_bible lỗi: {e}")
 
 
 def _extract_from_characters(table: dict[str, str]) -> None:
