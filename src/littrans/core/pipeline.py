@@ -364,8 +364,14 @@ class Pipeline:
 
             if post_result.issues:
                 for issue in post_result.issues:
-                    icon = "🔧" if issue.severity == "auto_fix" else "⚠️"
-                    print(f"     {icon} [{issue.type}] {issue.detail[:80]}")
+                    icon = "🔴" if issue.severity == "retry_required" else "⚠️"
+                    # In đầy đủ detail, wrap dài nếu cần
+                    detail_lines = [issue.detail[i:i+120] for i in range(0, len(issue.detail), 120)]
+                    print(f"     {icon} [{issue.type}] {detail_lines[0]}")
+                    for line in detail_lines[1:]:
+                        print(f"          {line}")
+                    if issue.location:
+                        print(f"          📍 tại: «{issue.location}»")
 
             if post_result.passed or not post_result.has_retry_required():
                 break

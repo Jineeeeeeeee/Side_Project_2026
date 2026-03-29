@@ -1,8 +1,10 @@
 """
 src/littrans/core/post_analyzer.py — Post-call: review + extract metadata.
 
-[FIX] Xoá auto_fixed field và has_auto_fix() method — cả hai luôn False/không làm gì.
-     Cleanup được đảm nhiệm hoàn toàn bởi post_processor.py (14-pass code thuần).
+[FIX v2] Auto-escalate warn → retry_required for critical issues that small models
+         tend to mislabel (truncated content, missing paragraphs, name leaks).
+         Also fixes 'passed' logic: if any retry_required issue exists → passed=False.
+         Improves _POST_SYSTEM prompt clarity for smaller models.
 """
 from __future__ import annotations
 
@@ -45,6 +47,62 @@ class PostResult:
         return any(i.severity == "retry_required" for i in self.issues)
 
 
+# ── Severity escalation rules ─────────────────────────────────────
+
+# Các issue type mà nếu có keyword nghiêm trọng → bắt buộc retry
+_ESCALATE_TYPES = frozenset({"format", "missing", "structure", "name_leak", "pronoun"})
+
+# Keywords trong `detail` cho thấy lỗi thực sự nghiêm trọng
+# (small models hay mislabel những lỗi này là "warn")
+_CRITICAL_KEYWORDS = frozenset({
+    # Truncation / missing content
+    "cắt cụt", "bị cắt", "missing content", "bị mất", "thiếu nội dung",
+    "mất đoạn", "mất nội dung", "thiếu đoạn", "bỏ sót đoạn",
+    "truncat", "incomplete", "cut off",
+    # Name / skill errors
+    "tên gốc", "name lock", "còn sót", "dùng sai tên", "sai tên",
+    "không dịch tên", "giữ nguyên tên tiếng anh",
+    # Pronoun errors
+    "sai xưng hô", "xưng hô không đúng", "pronoun sai",
+    # Missing translation
+    "không dịch", "bỏ qua đoạn", "đoạn chưa dịch",
+})
+
+
+def _escalate_severity(issues: list[QualityIssue]) -> list[QualityIssue]:
+    """
+    Auto-escalate warn → retry_required for clearly critical issues.
+
+    Small models (flash-lite, haiku) regularly mislabel serious issues as 'warn':
+    - Truncated chapters detected by post-call
+    - Name lock violations
+    - Missing paragraphs
+
+    This function catches those cases deterministically in Python,
+    independent of what the AI model decided.
+    """
+    result = []
+    for issue in issues:
+        if issue.severity == "warn":
+            detail_lower = issue.detail.lower()
+            is_escalatable_type = issue.type in _ESCALATE_TYPES
+            has_critical_kw = any(kw in detail_lower for kw in _CRITICAL_KEYWORDS)
+
+            if is_escalatable_type and has_critical_kw:
+                logging.warning(
+                    f"[PostAnalyzer] Auto-escalate warn→retry_required: "
+                    f"[{issue.type}] {issue.detail[:100]}"
+                )
+                issue = QualityIssue(
+                    type     = issue.type,
+                    severity = "retry_required",
+                    location = issue.location,
+                    detail   = issue.detail + "  ⬆ [auto-escalated]",
+                )
+        result.append(issue)
+    return result
+
+
 # ── System prompt ─────────────────────────────────────────────────
 
 _POST_SYSTEM = """Bạn là AI editor chuyên review bản dịch LitRPG / Tu Tiên.
@@ -58,19 +116,28 @@ Bạn nhận được:
 NHIỆM VỤ 1 — ĐÁNH GIÁ CHẤT LƯỢNG
 ═══════════════════════════════════════════════════════════════
 Lưu ý: Bản dịch đã qua code cleanup (dấu câu, dòng trống, code block wrapper).
-Chỉ báo cáo các lỗi mà code KHÔNG thể tự sửa:
 
-retry_required (Trans-call phải chạy lại):
-  - Tên nhân vật / địa danh sai hoặc lọt qua Name Lock
-  - Tên kỹ năng sai so với danh sách đã lock
-  - Pronoun sai (dùng sai cặp xưng hô đã chốt)
-  - Đoạn văn bị mất hoặc ý nghĩa lệch nghiêm trọng
-  - Câu bị cắt cụt, thiếu nội dung quan trọng
+NGUYÊN TẮC PHÂN LOẠI SEVERITY:
+  retry_required = Trans-call PHẢI chạy lại, người đọc thấy lỗi rõ ràng
+  warn           = Chỉ ghi log, không cần chạy lại
 
-warn (ghi log, không cần retry):
-  - Văn phong chưa tự nhiên ở đoạn cụ thể
-  - Thuật ngữ dịch chưa hay nhưng không sai
-  - Lỗi format nhẹ còn sót (ít ảnh hưởng đến đọc)
+retry_required — CÁC TRƯỜNG HỢP SAU BẮT BUỘC DÙNG retry_required:
+  ✗ Tên nhân vật / địa danh sai (dùng tên EN khi đã có tên VN trong Chapter Map)
+  ✗ Tên kỹ năng sai so với danh sách đã lock trong Chapter Map
+  ✗ Pronoun sai (dùng sai cặp xưng hô đã chốt, VD: "Anh/Em" thay vì "Ta/Ngươi")
+  ✗ Đoạn văn bị cắt cụt, mất nội dung, thiếu đoạn so với bản gốc
+  ✗ Câu bị bỏ qua hoàn toàn, không có trong bản dịch
+  ✗ Ý nghĩa bị dịch ngược hoặc sai hoàn toàn
+
+warn — CHỈ dùng warn khi:
+  ~ Văn phong chưa tự nhiên nhưng ý đúng
+  ~ Thuật ngữ dịch chưa hay nhưng không sai
+  ~ Lỗi format nhỏ không ảnh hưởng nội dung
+
+LƯU Ý QUAN TRỌNG — CẮT CỤT:
+  Nếu bạn không thể xem toàn bộ bản gốc/bản dịch do giới hạn ký tự,
+  hãy ghi issue với severity: "retry_required" và type: "format",
+  không phải "warn" hay "style". Đây là lỗi nghiêm trọng cần kiểm tra.
 
 KHÔNG báo cáo:
   - Dấu câu, dòng trống, code block — đã được xử lý tự động
@@ -129,7 +196,7 @@ Trả về JSON. KHÔNG thêm bất cứ thứ gì ngoài JSON:
         "detail": "mô tả lỗi cụ thể"
       }
     ],
-    "retry_instruction": ""
+    "retry_instruction": "hướng dẫn cụ thể để Trans-call sửa (chỉ điền khi có retry_required)"
   },
   "metadata": {
     "new_terms": [],
@@ -191,10 +258,14 @@ def _build_user_message(
     MAX_CHARS = 15_000
     src_preview = source_text[:MAX_CHARS]
     if len(source_text) > MAX_CHARS:
-        src_preview += "\n[... bị cắt bớt ...]"
+        src_preview += (
+            f"\n[... BỊ CẮT — bản gốc còn {len(source_text) - MAX_CHARS:,} ký tự phía sau ...]"
+        )
     tl_preview = translation[:MAX_CHARS]
     if len(translation) > MAX_CHARS:
-        tl_preview += "\n[... bị cắt bớt ...]"
+        tl_preview += (
+            f"\n[... BỊ CẮT — bản dịch còn {len(translation) - MAX_CHARS:,} ký tự phía sau ...]"
+        )
 
     parts.append(f"## BẢN GỐC (EN)\n{src_preview}")
     parts.append(f"## BẢN DỊCH (VN)\n{tl_preview}")
@@ -206,6 +277,7 @@ def _parse(data: dict, original_translation: str, filename: str) -> PostResult:
     quality  = data.get("quality", {})
     metadata = data.get("metadata", {})
 
+    # ── Parse raw issues ──────────────────────────────────────────
     issues = []
     for raw in quality.get("issues", []):
         if not isinstance(raw, dict):
@@ -221,15 +293,31 @@ def _parse(data: dict, original_translation: str, filename: str) -> PostResult:
             detail   = raw.get("detail", ""),
         ))
 
-    passed = bool(quality.get("passed", True))
-    retry  = quality.get("retry_instruction", "").strip()
+    # ── [FIX] Auto-escalate critical mislabeled issues ────────────
+    issues = _escalate_severity(issues)
 
+    # ── [FIX] passed must be False if any retry_required exists ───
+    # AI sometimes returns passed=true even with retry_required issues
+    has_critical = any(i.severity == "retry_required" for i in issues)
+    ai_passed    = bool(quality.get("passed", True))
+    passed       = ai_passed and not has_critical
+
+    retry = quality.get("retry_instruction", "").strip()
+
+    # ── [FIX] Auto-generate retry_instruction if missing ─────────
+    if has_critical and not retry:
+        retry_details = [
+            f"[{i.type}] {i.detail}"
+            for i in issues if i.severity == "retry_required"
+        ]
+        retry = "Sửa các lỗi sau: " + " | ".join(retry_details)
+
+    # ── Log retry_required issues ─────────────────────────────────
     retry_issues = [i for i in issues if i.severity == "retry_required"]
-    if retry_issues:
-        for issue in retry_issues:
-            logging.warning(
-                f"[PostAnalyzer] {filename} | {issue.type} | {issue.detail} | at: {issue.location}"
-            )
+    for issue in retry_issues:
+        logging.warning(
+            f"[PostAnalyzer] {filename} | {issue.type} | {issue.detail} | at: {issue.location}"
+        )
 
     return PostResult(
         final_translation    = original_translation,
@@ -242,6 +330,7 @@ def _parse(data: dict, original_translation: str, filename: str) -> PostResult:
         skill_updates        = safe_list(metadata.get("skill_updates")),
         ok                   = True,
     )
+
 
 # ── Auto-fix prompt ───────────────────────────────────────────────
 
@@ -334,7 +423,7 @@ def auto_fix_translation(
         if is_truncated:
             fixed = fixed.rstrip("\n") + "\n\n" + translation[MAX_CHARS:].lstrip("\n")
 
-        fix_summaries = [f"[{i.type}] {i.detail[:70]}" for i in retry_issues]
+        fix_summaries = [f"[{i.type}] {i.detail}" for i in retry_issues]
         logging.info(
             f"[AutoFix] {source_filename}: patched {len(retry_issues)} issues "
             f"({len(translation)} → {len(fixed)} chars)"
